@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "What the till's window is allowed to ask the Rust side for. Deliberately minimal: the webview gets the IPC channel and nothing else — no filesystem, no shell, no HTTP. Every capability listed here is a door someone could walk through, and an offline till needs almost none of them.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

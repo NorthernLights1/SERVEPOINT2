@@ -1,0 +1,39 @@
+[package]
+name = "servepoint"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.90"
+description = "Offline-first licensed POS for bars and clubs"
+
+# The library carries every rule; the binary is only a window around it. They
+# are split so `cargo test` never has to start a webview, and so the whole
+# business layer stays callable from a headless harness.
+[lib]
+name = "servepoint_lib"
+path = "src/lib.rs"
+
+[[bin]]
+name = "servepoint"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# `bundled` compiles SQLite into the binary. Non-negotiable for an offline
+# install: the venue must never depend on a system SQLite that may be absent,
+# older than the trigger features this schema needs, or silently different
+# between the dev machine and the till.
+rusqlite = { version = "0.37", features = ["bundled"] }
+sha2 = "0.10"
+chrono = "0.4"
+thiserror = "2"
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+# The audit chain and every money path use checked arithmetic. Overflow checks
+# stay ON in release too: §1.1 says silently wrapping money is worse than
+# crashing, and this is a till, not a hot loop.
+overflow-checks = true
