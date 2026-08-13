@@ -13,6 +13,16 @@ src-tauri/gen/
 *.db-wal
 *.db-shm
 
+# Spooled slips. Written beside the database, so they are already covered when
+# it lives outside the repo — but not when SERVEPOINT_DB points inside one.
+slips/
+
+# Vite loads .env files automatically, which makes it easy to drop a key into
+# one without thinking. This repo is public; keep them out by default.
+.env
+.env.*
+!.env.example
+
 # Editor and OS noise
 .DS_Store
 .vscode/
