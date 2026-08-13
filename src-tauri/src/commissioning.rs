@@ -153,13 +153,6 @@ pub struct RecipeLine {
     pub in_measure: bool,
 }
 
-#[derive(Clone, Copy, Debug)]
-pub struct OpeningStock {
-    pub product_id: i64,
-    pub quantity: Milli,
-    pub unit_cost: Money,
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum CommissioningError {
     #[error("{0}")]
@@ -334,6 +327,128 @@ pub fn set_staff_active(
     })
 }
 
+/// Take a shelf item off the catalogue, or bring it back.
+///
+/// **Removal never deletes.** The schema refuses a `DELETE` outright, and it is
+/// right to: an order line printed last year names this product, and a vanished
+/// row would take that line's meaning with it. Removing sets `active = 0`.
+///
+/// Two things make removal refuse, and both are cases where going ahead would
+/// quietly break something rather than fail loudly:
+///
+/// * **Stock still on the shelf.** `stock::levels` reads active products only,
+///   so removing one with a count still on it drops both the count and its
+///   value out of the inventory total with nothing said. Write it off first.
+/// * **A live recipe still pours it.** The drink would stay on the menu and
+///   fail at the shelf, mid-service.
+///
+/// Bringing something back is never refused — there is nothing to break.
+pub fn set_product_active(
+    conn: &mut Connection,
+    actor_id: i64,
+    product_id: i64,
+    active: bool,
+    at: i64,
+) -> Result<Change> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    require_owner(&tx, actor_id)?;
+    let before = catalogue::product(&tx, product_id)?;
+
+    if !active {
+        let on_hand = stock::on_hand(&tx, product_id)?;
+        if !on_hand.is_zero() {
+            return Err(repo::RepoError::Refused(format!(
+                "there is still {on_hand} {} of {} on the shelf; write it off first",
+                before.base_unit.to_lowercase(),
+                before.name
+            ))
+            .into());
+        }
+        if let Some(drink) = catalogue::poured_into(&tx, product_id)? {
+            return Err(repo::RepoError::Refused(format!(
+                "{} is still poured into {drink}; change that recipe first",
+                before.name
+            ))
+            .into());
+        }
+    }
+
+    catalogue::set_product_active(&tx, product_id, active)?;
+    let audit_sequence = audit_change(
+        &tx,
+        actor_id,
+        if active {
+            "PRODUCT_RESTORED"
+        } else {
+            "PRODUCT_REMOVED"
+        },
+        "product",
+        product_id,
+        if before.active {
+            "active=1"
+        } else {
+            "active=0"
+        },
+        if active { "active=1" } else { "active=0" },
+        at,
+    )?;
+    tx.commit()?;
+    Ok(Change {
+        entity_id: product_id,
+        audit_sequence,
+    })
+}
+
+/// Take a drink off the menu, or put it back. See [`set_product_active`].
+///
+/// The one refusal is a drink sitting on a tab nobody has settled: pulling it
+/// mid-service leaves the floor holding a line the till no longer sells. Tabs
+/// already settled are history, and hold it back from nothing.
+pub fn set_sale_item_active(
+    conn: &mut Connection,
+    actor_id: i64,
+    sale_item_id: i64,
+    active: bool,
+    at: i64,
+) -> Result<Change> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    require_owner(&tx, actor_id)?;
+    let before = catalogue::sale_item(&tx, sale_item_id)?;
+
+    if !active && catalogue::on_an_open_tab(&tx, sale_item_id)? {
+        return Err(repo::RepoError::Refused(format!(
+            "{} is on a tab that is still open; settle it first",
+            before.name
+        ))
+        .into());
+    }
+
+    catalogue::set_sale_item_active(&tx, sale_item_id, active)?;
+    let audit_sequence = audit_change(
+        &tx,
+        actor_id,
+        if active {
+            "SALE_ITEM_RESTORED"
+        } else {
+            "SALE_ITEM_REMOVED"
+        },
+        "sale_item",
+        sale_item_id,
+        if before.active {
+            "active=1"
+        } else {
+            "active=0"
+        },
+        if active { "active=1" } else { "active=0" },
+        at,
+    )?;
+    tx.commit()?;
+    Ok(Change {
+        entity_id: sale_item_id,
+        audit_sequence,
+    })
+}
+
 /// Put an existing shelf item on the menu, sold one for one.
 ///
 /// Writes the same three rows the long way round would — menu entry, recipe,
@@ -504,7 +619,7 @@ pub fn update_product(
     let after = catalogue::product(&tx, product_id)?;
     let old = product_facts(&before);
     let new = product_facts(&after);
-    let audit_sequence = audit_change(
+    let mut audit_sequence = audit_change(
         &tx,
         actor_id,
         "PRODUCT_CHANGED",
@@ -514,6 +629,37 @@ pub fn update_product(
         &new,
         at,
     )?;
+
+    // A product sold one for one shares its name with its menu entry, copied
+    // across when the pair was made. Renaming only the shelf would leave the
+    // till still offering the old name — the rename would look done and be
+    // half done. The entry's own active flag is left alone: what is on the
+    // menu is a separate question from what is on the shelf.
+    if let Some(sale_item_id) = catalogue::twin_of(&tx, product_id)? {
+        let twin = catalogue::sale_item(&tx, sale_item_id)?;
+        catalogue::update_sale_item(
+            &tx,
+            sale_item_id,
+            &catalogue::NewSaleItem {
+                code: &twin.code,
+                name: &input.name,
+                category: &input.category,
+            },
+            twin.active,
+        )?;
+        let renamed = catalogue::sale_item(&tx, sale_item_id)?;
+        audit_sequence = audit_change(
+            &tx,
+            actor_id,
+            "SALE_ITEM_CHANGED",
+            "sale_item",
+            sale_item_id,
+            &sale_item_facts(&twin),
+            &sale_item_facts(&renamed),
+            at,
+        )?;
+    }
+
     tx.commit()?;
     Ok(Change {
         entity_id: product_id,
@@ -652,80 +798,6 @@ pub fn reprice(
     tx.commit()?;
     Ok(Change {
         entity_id: id,
-        audit_sequence,
-    })
-}
-
-pub fn record_opening_stock(
-    conn: &mut Connection,
-    actor_id: i64,
-    input: &OpeningStock,
-    at: i64,
-) -> Result<Change> {
-    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    require_owner(&tx, actor_id)?;
-    if input.quantity.is_zero() || input.quantity.is_negative() {
-        return Err(
-            repo::RepoError::Refused("opening stock must be greater than zero".into()).into(),
-        );
-    }
-    if input.unit_cost.is_negative() {
-        return Err(
-            repo::RepoError::Refused("opening stock cost cannot be negative".into()).into(),
-        );
-    }
-    let product = catalogue::product(&tx, input.product_id)?;
-    if !product.tracks_inventory {
-        return Err(repo::RepoError::Refused(
-            "opening stock belongs only to a product that tracks inventory".into(),
-        )
-        .into());
-    }
-    let exists: bool = tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM stock_movements WHERE product_id = ?1)",
-        [input.product_id],
-        |row| row.get(0),
-    )?;
-    if exists {
-        return Err(repo::RepoError::Refused(
-            "that product already has stock history; use a stock count or correction".into(),
-        )
-        .into());
-    }
-    tx.execute(
-        "UPDATE products SET avg_cost_minor = ?2 WHERE id = ?1",
-        rusqlite::params![input.product_id, input.unit_cost.minor()],
-    )?;
-    let movement_id = stock::post(
-        &tx,
-        &stock::Movement::new(
-            input.product_id,
-            stock::Kind::StockCorrection,
-            input.quantity,
-            at,
-            actor_id,
-        )
-        .because("opening stock")
-        .costing(input.unit_cost),
-    )?;
-    let facts = format!(
-        "product_id={};quantity_milli={};unit_cost_minor={}",
-        input.product_id,
-        input.quantity.thousandths(),
-        input.unit_cost.minor()
-    );
-    let audit_sequence = audit(
-        &tx,
-        actor_id,
-        "OPENING_STOCK_RECORDED",
-        "stock_movement",
-        movement_id,
-        &facts,
-        at,
-    )?;
-    tx.commit()?;
-    Ok(Change {
-        entity_id: movement_id,
         audit_sequence,
     })
 }

@@ -94,7 +94,7 @@ export function SignIn({
               <span className="account__text">
                 <span>{entry.name}</span>
                 <span className="faint" style={{ fontSize: 12.5 }}>
-                  {entry.role === "OWNER" ? "Owner — reports and settings" : "Cashier — the till"}
+                  {entry.role === "OWNER" ? "Owner — the till, reports and settings" : "Cashier — the till"}
                 </span>
               </span>
             </button>

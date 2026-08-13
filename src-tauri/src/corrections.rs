@@ -181,7 +181,7 @@ pub fn correction_order(
     tab_id: i64,
     receipt_number: &str,
 ) -> Result<CorrectableOrderView> {
-    floor::require_cashier(state)?;
+    floor::require_till(state)?;
     state.with_db(|conn| {
         let order = find_original(conn, tab_id, receipt_number)?;
         order_view(conn, &order)
@@ -227,7 +227,7 @@ pub fn preview_correction(
     order_id: i64,
     lines: &[CorrectionLineInput],
 ) -> Result<CorrectionPreview> {
-    let session = floor::require_cashier(state)?;
+    let session = floor::require_till(state)?;
     let prepared = replacement_lines(lines)?;
     state.with_db_mut(|conn| {
         let transaction = conn.transaction()?;
@@ -288,7 +288,7 @@ pub fn correct_order(
     lines: &[CorrectionLineInput],
     returned: &[ReturnInput],
 ) -> Result<CorrectionResult> {
-    let session = floor::require_cashier(state)?;
+    let session = floor::require_till(state)?;
     let lines = replacement_lines(lines)?;
     let returned = returns(returned)?;
     let now = now_ms();
@@ -341,7 +341,7 @@ pub fn void_order(
     reason: &str,
     returned: &[ReturnInput],
 ) -> Result<FloorView> {
-    let session = floor::require_cashier(state)?;
+    let session = floor::require_till(state)?;
     let returned = returns(returned)?;
     let now = now_ms();
     state.with_db_mut(|conn| -> Result<()> {

@@ -738,11 +738,7 @@ fn insert_movement(
 }
 
 fn require_cashier(conn: &Connection, id: i64) -> Result<()> {
-    let person = staff::find(conn, id)?;
-    if !person.active || person.role != staff::Role::Cashier {
-        return super::refuse("an active cashier must operate the money workflow");
-    }
-    Ok(())
+    staff::require_till_operator(conn, id, "operate the money workflow")
 }
 
 fn require_waiter(conn: &Connection, id: i64) -> Result<()> {
@@ -1172,16 +1168,19 @@ mod tests {
         .unwrap_err();
         assert!(missing_category.to_string().contains("category"));
 
-        let owner = record_adjustment(
+        let waiter = record_adjustment(
             &bar.conn,
             shift.id,
             Money::from_minor(1),
             "not an operator",
-            bar.owner,
+            bar.sara,
             LATER,
         )
         .unwrap_err();
-        assert!(owner.to_string().contains("active cashier"), "got: {owner}");
+        assert!(
+            waiter.to_string().contains("cashier or owner"),
+            "got: {waiter}"
+        );
     }
 
     #[test]

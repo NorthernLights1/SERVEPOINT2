@@ -135,6 +135,24 @@ pub fn add(
     Ok(conn.last_insert_rowid())
 }
 
+/// **Who may work the till.**
+///
+/// A cashier, and the owner. The owner is not a spectator in a small venue —
+/// they cover the bar when it is busy and they open up when the cashier is
+/// late, and a build that refuses them leaves the venue unable to trade with
+/// its proprietor standing behind the counter.
+///
+/// Lives here, once, because the same rule is needed by shifts, tabs and cash.
+/// It used to be three private copies with three different refusal messages,
+/// which is three places to forget when the rule changes.
+pub fn require_till_operator(conn: &Connection, id: i64, doing: &str) -> Result<()> {
+    let person = find(conn, id)?;
+    if !person.active || !matches!(person.role, Role::Cashier | Role::Owner) {
+        return super::refuse(format!("an active cashier or owner must {doing}"));
+    }
+    Ok(())
+}
+
 /// Take somebody off the floor. Nobody is ever deleted: their name is on
 /// receipts, orders and reconciliations that must stay readable forever.
 pub fn set_active(conn: &Connection, id: i64, active: bool, at: i64) -> Result<()> {

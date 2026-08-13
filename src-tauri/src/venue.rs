@@ -1,6 +1,6 @@
 //! What the venue is made of — the owner's side of the counter.
 //!
-//! Staff, products, the menu, recipes, prices and opening stock. Every rule
+//! Staff, products, the menu, recipes and prices. Every rule
 //! and every audit entry belongs to `commissioning`; this module is the window
 //! onto it, exactly as `floor` is the window onto `trading`.
 //!
@@ -101,15 +101,6 @@ pub struct RecipeLineForm {
     pub in_measure: bool,
 }
 
-#[derive(Debug, Clone, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct OpeningStockForm {
-    pub product_id: i64,
-    pub quantity_milli: i64,
-    /// What a base unit cost, as typed: `"42.50"`.
-    pub unit_cost: String,
-}
-
 // ---------------------------------------------------------------------------
 // What the frontend receives
 // ---------------------------------------------------------------------------
@@ -132,6 +123,10 @@ pub struct ProductLine {
     pub sale_item_id: Option<i64>,
     /// What it sells for, already formatted. `None` when it is stock only.
     pub price: Option<String>,
+    /// The same amount unformatted — `"1200.00"` — which is what `Money::parse`
+    /// accepts back. An edit box filled from `price` would send
+    /// `"1,200.00 ETB"` and be refused for something the owner never typed.
+    pub price_value: Option<String>,
     /// `NONE`, `ML` or `GRAM`.
     pub content_measure: String,
     /// How much one counted unit holds, formatted: `"750"`. Empty when none.
@@ -177,6 +172,8 @@ pub struct SaleItemLine {
     pub active: bool,
     /// `None` until somebody prices it.
     pub price: Option<String>,
+    /// The same amount unformatted, for an edit box. See [`ProductLine`].
+    pub price_value: Option<String>,
     pub recipe: Vec<RecipeLineView>,
     /// Active, priced and with a recipe — the three things the till needs.
     pub sellable: bool,
@@ -234,7 +231,7 @@ fn product_lines(conn: &Connection, settings: &Settings) -> Result<Vec<ProductLi
         rows.collect::<rusqlite::Result<_>>()?
     };
 
-    catalogue::products(conn)?
+    catalogue::every_product(conn)?
         .into_iter()
         .map(|product| {
             let twin = twins.get(&product.id).copied();
@@ -244,6 +241,9 @@ fn product_lines(conn: &Connection, settings: &Settings) -> Result<Vec<ProductLi
                 price: twin
                     .and_then(|(_, minor)| minor)
                     .map(|minor| settings.format_money(Money::from_minor(minor))),
+                price_value: twin
+                    .and_then(|(_, minor)| minor)
+                    .map(|minor| Money::from_minor(minor).to_display()),
                 id: product.id,
                 content_per_unit: if product.content_measure == "NONE" {
                     String::new()
@@ -277,15 +277,16 @@ fn product_lines(conn: &Connection, settings: &Settings) -> Result<Vec<ProductLi
 fn sale_item_lines(conn: &Connection, settings: &Settings) -> Result<Vec<SaleItemLine>> {
     // What each product is measured in, so a line written as "30ml" can be
     // shown back the same way instead of as 0.04 of a bottle.
-    let measures: std::collections::BTreeMap<i64, (String, Milli)> = catalogue::products(conn)?
-        .into_iter()
-        .map(|product| {
-            (
-                product.id,
-                (product.content_measure, product.content_per_unit),
-            )
-        })
-        .collect();
+    let measures: std::collections::BTreeMap<i64, (String, Milli)> =
+        catalogue::every_product(conn)?
+            .into_iter()
+            .map(|product| {
+                (
+                    product.id,
+                    (product.content_measure, product.content_per_unit),
+                )
+            })
+            .collect();
 
     let mut statement = conn.prepare(
         "SELECT s.id, s.code, s.name, s.category, s.active, p.price_minor, r.id,
@@ -349,6 +350,7 @@ fn sale_item_lines(conn: &Connection, settings: &Settings) -> Result<Vec<SaleIte
                     category,
                     active,
                     price: price.map(|minor| settings.format_money(Money::from_minor(minor))),
+                    price_value: price.map(|minor| Money::from_minor(minor).to_display()),
                     sellable: active && price.is_some() && !recipe.is_empty(),
                     recipe,
                 })
@@ -546,22 +548,28 @@ pub fn set_recipe(
     })
 }
 
+/// Take a shelf item off the catalogue, or bring it back. Never a delete.
+pub fn set_product_active(state: &AppState, product_id: i64, active: bool) -> Result<SetupView> {
+    commission(state, move |conn, actor, at| {
+        commissioning::set_product_active(conn, actor, product_id, active, at)
+    })
+}
+
+/// Take a drink off the menu, or put it back. Never a delete.
+pub fn set_sale_item_active(
+    state: &AppState,
+    sale_item_id: i64,
+    active: bool,
+) -> Result<SetupView> {
+    commission(state, move |conn, actor, at| {
+        commissioning::set_sale_item_active(conn, actor, sale_item_id, active, at)
+    })
+}
+
 pub fn set_price(state: &AppState, sale_item_id: i64, price: &str) -> Result<SetupView> {
     let price = money(price, "Price")?;
     commission(state, move |conn, actor, at| {
         commissioning::reprice(conn, actor, sale_item_id, price, at)
-    })
-}
-
-/// The first count of something already on the shelf, with what it cost.
-pub fn add_opening_stock(state: &AppState, form: &OpeningStockForm) -> Result<SetupView> {
-    let input = commissioning::OpeningStock {
-        product_id: form.product_id,
-        quantity: milli(form.quantity_milli, "Opening quantity")?,
-        unit_cost: money(&form.unit_cost, "Unit cost")?,
-    };
-    commission(state, |conn, actor, at| {
-        commissioning::record_opening_stock(conn, actor, &input, at)
     })
 }
 
@@ -647,11 +655,21 @@ pub fn cmd_set_price(
 }
 
 #[tauri::command]
-pub fn cmd_add_opening_stock(
+pub fn cmd_set_product_active(
     state: tauri::State<'_, AppState>,
-    form: OpeningStockForm,
+    product_id: i64,
+    active: bool,
 ) -> Result<SetupView> {
-    add_opening_stock(&state, &form)
+    set_product_active(&state, product_id, active)
+}
+
+#[tauri::command]
+pub fn cmd_set_sale_item_active(
+    state: tauri::State<'_, AppState>,
+    sale_item_id: i64,
+    active: bool,
+) -> Result<SetupView> {
+    set_sale_item_active(&state, sale_item_id, active)
 }
 
 #[cfg(test)]
@@ -745,17 +763,147 @@ mod tests {
         .unwrap();
         assert!(view.can_trade, "{:?}", view.missing);
         assert!(view.missing.is_empty());
+    }
 
-        let view = add_opening_stock(
+    #[test]
+    fn something_removed_stays_visible_so_it_can_come_back() {
+        // A removed product that vanished from this screen could never be
+        // restored, and nothing would show it had been taken off.
+        let state = owned();
+        add_product(&state, &product_form("Gin")).unwrap();
+        let gin = setup_view(&state).unwrap().products[0].id;
+
+        let view = set_product_active(&state, gin, false).unwrap();
+        let line = view.products.iter().find(|p| p.id == gin).unwrap();
+        assert!(!line.active, "removed but still listed");
+
+        let view = set_product_active(&state, gin, true).unwrap();
+        assert!(view.products.iter().find(|p| p.id == gin).unwrap().active);
+    }
+
+    #[test]
+    fn stock_on_the_shelf_blocks_removal_but_never_editing() {
+        // The user's rule: refuse to remove something that is not empty, but
+        // always allow it to be edited.
+        let state = owned();
+        add_product(&state, &product_form("Gin")).unwrap();
+        let gin = setup_view(&state).unwrap().products[0].id;
+        state
+            .with_db(|conn| {
+                crate::repo::stock::post(
+                    conn,
+                    &crate::repo::stock::Movement::new(
+                        gin,
+                        crate::repo::stock::Kind::StockCorrection,
+                        Milli::from_units(4),
+                        now_ms(),
+                        1,
+                    )
+                    .because("test shelf"),
+                )
+                .map(|_| ())
+            })
+            .unwrap();
+
+        let refused = set_product_active(&state, gin, false).unwrap_err();
+        assert_eq!(refused.kind, "REFUSED");
+        assert!(refused.message.contains("shelf"), "got: {refused:?}");
+
+        // Editing is untouched by any of that.
+        let mut form = product_form("Gin");
+        form.category = "Spirits".into();
+        assert!(edit_product(&state, gin, &form).is_ok());
+    }
+
+    #[test]
+    fn renaming_a_shelf_item_renames_what_the_till_offers() {
+        // The pair share a name, copied across when they were made. A rename
+        // that stopped at the shelf would leave the till still selling "Gin"
+        // long after the bottle became "Gordon's gin".
+        let state = owned();
+        let mut form = product_form("Gin");
+        form.sale_price = Some("1200".into());
+        add_product(&state, &form).unwrap();
+        let gin = setup_view(&state).unwrap().products[0].id;
+
+        form.name = "Gordon's gin".into();
+        let view = edit_product(&state, gin, &form).unwrap();
+
+        let shelf = view.products.iter().find(|p| p.id == gin).unwrap();
+        assert_eq!(shelf.name, "Gordon's gin");
+        let twin = view
+            .sale_items
+            .iter()
+            .find(|item| item.from_product_id == Some(gin))
+            .unwrap();
+        assert_eq!(twin.name, "Gordon's gin", "the till kept the old name");
+        // What an edit box is filled with has to be what `Money::parse` reads
+        // back: the formatted "1,200.00" would be refused on the way in.
+        assert_eq!(shelf.price_value.as_deref(), Some("1200.00"));
+    }
+
+    #[test]
+    fn an_ingredient_of_a_live_drink_cannot_be_removed() {
+        let state = owned();
+        add_product(&state, &product_form("Gin")).unwrap();
+        let gin = setup_view(&state).unwrap().products[0].id;
+        let drink = add_sale_item(
             &state,
-            &OpeningStockForm {
-                product_id: beer,
-                quantity_milli: 24_000,
-                unit_cost: "30.00".into(),
+            &SaleItemForm {
+                name: "Gin and tonic".into(),
+                category: "Cocktails".into(),
+                active: true,
             },
         )
+        .unwrap()
+        .sale_items
+        .iter()
+        .find(|item| item.name == "Gin and tonic")
+        .unwrap()
+        .id;
+        set_recipe(
+            &state,
+            drink,
+            &[RecipeLineForm {
+                product_id: gin,
+                quantity_milli: 1_000,
+                in_measure: false,
+            }],
+        )
         .unwrap();
-        assert_eq!(view.products[0].on_hand, "24");
+
+        let refused = set_product_active(&state, gin, false).unwrap_err();
+        assert_eq!(refused.kind, "REFUSED");
+        assert!(
+            refused.message.contains("Gin and tonic"),
+            "the refusal should name the drink; got: {refused:?}"
+        );
+    }
+
+    #[test]
+    fn a_drink_nobody_is_drinking_comes_off_the_menu() {
+        let state = owned();
+        let drink = add_sale_item(
+            &state,
+            &SaleItemForm {
+                name: "Negroni".into(),
+                category: "Cocktails".into(),
+                active: true,
+            },
+        )
+        .unwrap()
+        .sale_items[0]
+            .id;
+
+        let view = set_sale_item_active(&state, drink, false).unwrap();
+        assert!(
+            !view
+                .sale_items
+                .iter()
+                .find(|i| i.id == drink)
+                .unwrap()
+                .active
+        );
     }
 
     #[test]

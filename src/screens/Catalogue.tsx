@@ -10,7 +10,15 @@
 import { useState } from "react";
 import { useEffect } from "react";
 
-import type { Measure, ProductLine, SaleItemLine, SetupView } from "../api";
+import type {
+  BaseUnit,
+  Destination,
+  Measure,
+  ProductForm,
+  ProductLine,
+  SaleItemLine,
+  SetupView,
+} from "../api";
 import { api, ServePointError } from "../api";
 import { Banner, Card, Chip, Empty, Field, Loading } from "../ui";
 
@@ -168,8 +176,7 @@ function Products({ view, busy, run }: Section) {
   const [unit, setUnit] = useState<"BOTTLE" | "SHOT" | "UNIT">("BOTTLE");
   const [threshold, setThreshold] = useState("3");
   const [destination, setDestination] = useState<"BAR" | "KITCHEN">("BAR");
-  const [counting, setCounting] = useState<ProductLine>();
-  const [pricing, setPricing] = useState<ProductLine>();
+  const [editing, setEditing] = useState<ProductLine>();
   // A club sells bottles, so the common case is the default: what goes on the
   // shelf is what you sell. Untick it for a mixer nobody orders by name.
   const [onMenu, setOnMenu] = useState(true);
@@ -334,22 +341,24 @@ function Products({ view, busy, run }: Section) {
                 </span>
               </span>
               <span className="row__value">
+                {!product.active && <Chip tone="quiet">Removed</Chip>}
                 {product.price ?? <Chip tone="quiet">Not sold</Chip>}
-                {product.saleItemId === null && (
+                {product.active && (
                   <button
                     type="button"
                     className="btn"
-                    onClick={() => setPricing(pricing?.id === product.id ? undefined : product)}
+                    onClick={() => setEditing(editing?.id === product.id ? undefined : product)}
                   >
-                    Sell it
+                    {product.saleItemId === null ? "Sell it" : "Edit"}
                   </button>
                 )}
                 <button
                   type="button"
-                  className="btn"
-                  onClick={() => setCounting(counting?.id === product.id ? undefined : product)}
+                  className={product.active ? "btn btn--danger" : "btn"}
+                  disabled={busy}
+                  onClick={() => run(() => api.setProductActive(product.id, !product.active))}
                 >
-                  Count in
+                  {product.active ? "Remove" : "Bring back"}
                 </button>
               </span>
             </li>
@@ -357,69 +366,51 @@ function Products({ view, busy, run }: Section) {
         </ul>
       )}
 
-      {pricing && (
-        <StartSelling
-          product={pricing}
+      {editing && (
+        <EditProduct
+          key={editing.id}
+          product={editing}
           busy={busy}
           run={run}
-          onDone={() => setPricing(undefined)}
-        />
-      )}
-
-      {counting && (
-        <OpeningStock
-          product={counting}
-          busy={busy}
-          run={run}
-          onDone={() => setCounting(undefined)}
+          onDone={() => setEditing(undefined)}
         />
       )}
     </Card>
   );
 }
 
-/** Put a stock-only item on the menu after the fact, sold one for one. */
-function StartSelling({
-  product,
-  busy,
-  run,
-  onDone,
-}: {
-  product: ProductLine;
-  busy: boolean;
-  run: Section["run"];
-  onDone: () => void;
-}) {
-  const [price, setPrice] = useState("");
-
-  return (
-    <>
-      <Field
-        label={`What one ${product.name.toLowerCase()} sells for`}
-        help="It goes on the menu under its own name, drawing one off the shelf per sale."
-      >
-        <input
-          inputMode="decimal"
-          value={price}
-          onChange={(event) => setPrice(event.target.value)}
-        />
-      </Field>
-      <button
-        type="button"
-        className="btn btn--primary"
-        disabled={busy || price.trim() === ""}
-        onClick={async () => {
-          const ok = await run(() => api.sellProduct(product.id, price));
-          if (ok) onDone();
-        }}
-      >
-        Put it on the menu
-      </button>
-    </>
-  );
+/**
+ * The form Rust wants, rebuilt from the line it sent.
+ *
+ * Everything except the name is handed straight back, so an edit that changes
+ * one field cannot quietly restate the rest — and `sale_price` is left out
+ * because an update ignores it. Pricing is its own command, further down.
+ */
+function formOf(product: ProductLine, name: string): ProductForm {
+  return {
+    name,
+    category: product.category,
+    baseUnit: product.baseUnit as BaseUnit,
+    baseUnitsPerPack: toMilli(product.baseUnitsPerPack),
+    unitsPerPurchasePack: product.unitsPerPurchasePack,
+    lowStockThreshold: toMilli(product.lowStockThreshold),
+    tracksInventory: product.tracksInventory,
+    destination: product.destination as Destination,
+    contentMeasure: product.contentMeasure,
+    contentPerUnitMilli:
+      product.contentMeasure === "NONE" ? 0 : toMilli(product.contentPerUnit),
+    active: product.active,
+  };
 }
 
-function OpeningStock({
+/**
+ * Rename something on the shelf, and say what it sells for.
+ *
+ * The same panel does both jobs a shelf item can need. For one that is not on
+ * the menu yet, typing a price is what puts it there — which is why the row's
+ * button still says "Sell it" until it has one.
+ */
+function EditProduct({
   product,
   busy,
   run,
@@ -430,43 +421,52 @@ function OpeningStock({
   run: Section["run"];
   onDone: () => void;
 }) {
-  const [quantity, setQuantity] = useState("");
-  const [cost, setCost] = useState("");
+  const [name, setName] = useState(product.name);
+  // Filled from the plain figure, never the formatted one: "1,200.00 ETB"
+  // would go back as something Rust refuses to read.
+  const [price, setPrice] = useState(product.priceValue ?? "");
+  const onMenu = product.saleItemId !== null;
 
   return (
     <>
-      <Field
-        label={`How many ${product.name.toLowerCase()} are on the shelf now`}
-        help="The first count. Everything after this goes through deliveries and stock counts."
-      >
-        <input
-          inputMode="decimal"
-          value={quantity}
-          onChange={(event) => setQuantity(event.target.value)}
-        />
-      </Field>
-      <Field
-        label="What one cost"
-        help="Used to value the shelf and work out what each drink actually earns."
-      >
-        <input inputMode="decimal" value={cost} onChange={(event) => setCost(event.target.value)} />
-      </Field>
+      <h3>{product.name}</h3>
+      <div className="grid grid--halves">
+        <Field label="Name" help="It is renamed on the shelf and on the till together.">
+          <input value={name} onChange={(event) => setName(event.target.value)} />
+        </Field>
+        <Field
+          label="Sale price"
+          help={
+            onMenu
+              ? "Changing it prices from now on. What was already charged stands."
+              : "It goes on the menu under its own name, drawing one off the shelf per sale. Leave it blank to keep it off."
+          }
+        >
+          <input
+            inputMode="decimal"
+            value={price}
+            onChange={(event) => setPrice(event.target.value)}
+          />
+        </Field>
+      </div>
       <button
         type="button"
         className="btn btn--primary"
-        disabled={busy || quantity.trim() === "" || cost.trim() === ""}
+        disabled={busy || name.trim() === ""}
         onClick={async () => {
-          const ok = await run(() =>
-            api.addOpeningStock({
-              productId: product.id,
-              quantityMilli: toMilli(quantity),
-              unitCost: cost,
-            }),
-          );
+          const ok = await run(async () => {
+            const after = await api.editProduct(product.id, formOf(product, name));
+            if (price.trim() === "" || price.trim() === product.priceValue) return after;
+            // A first price is what puts it on the menu; a later one is a
+            // reprice of the entry already there.
+            return product.saleItemId === null
+              ? api.sellProduct(product.id, price)
+              : api.setPrice(product.saleItemId, price);
+          });
           if (ok) onDone();
         }}
       >
-        Count it in
+        Save
       </button>
     </>
   );
@@ -538,27 +538,37 @@ function SaleItems({ view, busy, run }: Section) {
       ) : (
         <ul className="rows">
           {composed.map((item) => (
-            <li key={item.id}>
+            <li key={item.id} className="row row--static">
               <button
                 type="button"
-                className="row"
+                className="row__main"
                 aria-pressed={item.id === editingId}
                 onClick={() => setEditingId(editingId === item.id ? undefined : item.id)}
               >
-                <span className="row__main">
-                  <strong>{item.name}</strong>
-                  <span className="muted">
-                    {item.category} ·{" "}
-                    {item.recipe.length > 0
-                      ? item.recipe.map((line) => `${line.quantity} ${line.name}`).join(" + ")
-                      : "no recipe"}
-                  </span>
-                </span>
-                <span className="row__value">
-                  {item.price ?? "no price"}
-                  {!item.sellable && <Chip tone="warn">Not sellable</Chip>}
+                <strong>{item.name}</strong>
+                <span className="muted">
+                  {item.category} ·{" "}
+                  {item.recipe.length > 0
+                    ? item.recipe.map((line) => `${line.quantity} ${line.name}`).join(" + ")
+                    : "no recipe"}
                 </span>
               </button>
+              <span className="row__value">
+                {item.price ?? "no price"}
+                {!item.active ? (
+                  <Chip tone="quiet">Removed</Chip>
+                ) : (
+                  !item.sellable && <Chip tone="warn">Not sellable</Chip>
+                )}
+                <button
+                  type="button"
+                  className={item.active ? "btn btn--danger" : "btn"}
+                  disabled={busy}
+                  onClick={() => run(() => api.setSaleItemActive(item.id, !item.active))}
+                >
+                  {item.active ? "Remove" : "Bring back"}
+                </button>
+              </span>
             </li>
           ))}
         </ul>
@@ -586,7 +596,9 @@ function Composition({ item, view, busy, run }: Section & { item: SaleItemLine }
     const measure = measureOf(productId);
     return measure === "ML" ? "millilitres" : measure === "GRAM" ? "grams" : "whole units";
   };
-  const [price, setPrice] = useState(item.price ?? "");
+  const [name, setName] = useState(item.name);
+  // The plain figure, not the formatted one — see EditProduct.
+  const [price, setPrice] = useState(item.priceValue ?? "");
 
   return (
     <>
@@ -666,16 +678,36 @@ function Composition({ item, view, busy, run }: Section & { item: SaleItemLine }
         </button>
       </div>
 
-      <Field label="Price" help="What the customer is charged for one.">
-        <input inputMode="decimal" value={price} onChange={(event) => setPrice(event.target.value)} />
-      </Field>
+      <div className="grid grid--halves">
+        <Field label="Name" help="What it is called when somebody orders it.">
+          <input value={name} onChange={(event) => setName(event.target.value)} />
+        </Field>
+        <Field label="Price" help="What the customer is charged for one.">
+          <input
+            inputMode="decimal"
+            value={price}
+            onChange={(event) => setPrice(event.target.value)}
+          />
+        </Field>
+      </div>
       <button
         type="button"
         className="btn btn--primary"
-        disabled={busy || price.trim() === ""}
-        onClick={() => run(() => api.setPrice(item.id, price))}
+        disabled={busy || name.trim() === ""}
+        onClick={() =>
+          run(async () => {
+            const after = await api.editSaleItem(item.id, {
+              name,
+              category: item.category,
+              active: item.active,
+            });
+            return price.trim() === "" || price.trim() === item.priceValue
+              ? after
+              : api.setPrice(item.id, price);
+          })
+        }
       >
-        Save the price
+        Save the name and price
       </button>
     </>
   );

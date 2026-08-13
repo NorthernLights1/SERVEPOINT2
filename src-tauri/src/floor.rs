@@ -27,14 +27,20 @@ fn now_ms() -> i64 {
     Utc::now().timestamp_millis()
 }
 
-/// The till is a cashier's instrument — the repositories refuse anybody else
-/// too, but the refusal is said here in words rather than as a constraint.
-pub(crate) fn require_cashier(state: &AppState) -> Result<Session> {
+/// Who may work the till: a cashier, or the owner.
+///
+/// The owner is not a spectator in a small venue. They cover the bar when it
+/// is busy and open up when the cashier is late, and a build that refuses them
+/// leaves the venue unable to trade with its proprietor stood behind the
+/// counter. `staff::require_till_operator` says the same thing at the
+/// repository layer — both must agree, or a command passes here and is refused
+/// two layers down with a message nobody expected.
+pub(crate) fn require_till(state: &AppState) -> Result<Session> {
     let session = require_session(state)?;
-    if session.role != "CASHIER" {
+    if session.role != "CASHIER" && session.role != "OWNER" {
         return Err(CommandError::of(
             "NOT_PERMITTED",
-            "Only a cashier can work the till.",
+            "Only a cashier or the owner can work the till.",
         ));
     }
     Ok(session)
@@ -122,6 +128,10 @@ pub struct StockLine {
 pub struct InventoryView {
     pub lines: Vec<StockLine>,
     pub total_value: String,
+    /// What was received recently, newest first — the batches behind the
+    /// shelf's cost. Restocking is ordinary and repeated, so this is a running
+    /// history rather than a one-off count.
+    pub deliveries: Vec<crate::receiving::DeliveryLine>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -247,6 +257,7 @@ pub fn inventory_view(state: &AppState) -> Result<InventoryView> {
         Ok(InventoryView {
             lines,
             total_value: settings.format_money(total),
+            deliveries: crate::receiving::history(conn, &settings)?,
         })
     })
 }
@@ -256,7 +267,7 @@ pub fn inventory_view(state: &AppState) -> Result<InventoryView> {
 // ---------------------------------------------------------------------------
 
 pub fn open_shift(state: &AppState, opening_float: &str) -> Result<FloorView> {
-    let session = require_cashier(state)?;
+    let session = require_till(state)?;
     let now = now_ms();
     let float = Money::parse(opening_float)
         .map_err(|error| CommandError::refused(format!("Opening float: {error}")))?;
@@ -303,7 +314,7 @@ pub fn open_tab(
     reference: &str,
     contact: Option<&str>,
 ) -> Result<FloorView> {
-    let session = require_cashier(state)?;
+    let session = require_till(state)?;
     let now = now_ms();
     let reference = reference.trim();
     if reference.is_empty() {
@@ -347,7 +358,7 @@ pub fn open_tab(
 /// exist to resolve, and inventing an outcome for it here would be forging an
 /// authorisation nobody gave.
 pub fn place_order(state: &AppState, tab_id: i64, lines: &[OrderLine]) -> Result<PlacedOrder> {
-    let session = require_cashier(state)?;
+    let session = require_till(state)?;
     let now = now_ms();
     if lines.is_empty() {
         return Err(CommandError::refused(
@@ -532,6 +543,7 @@ mod tests {
     struct Till {
         state: AppState,
         directory: PathBuf,
+        owner: i64,
         waiter: i64,
         beer: i64,
         beer_bottle: i64,
@@ -570,6 +582,7 @@ mod tests {
         Till {
             state,
             directory,
+            owner,
             waiter,
             beer,
             beer_bottle,
@@ -587,6 +600,42 @@ mod tests {
         open_shift(&till.state, "500").unwrap();
         let view = open_tab(&till.state, till.waiter, "7", None).unwrap();
         view.tabs[0].id
+    }
+
+    #[test]
+    fn the_owner_may_work_the_till_too() {
+        // A small venue's owner covers the bar. Refusing them left the place
+        // unable to trade with its proprietor stood behind the counter.
+        //
+        // The check exists twice — here and in `staff::require_till_operator` —
+        // so this opens a shift and a tab, which reach the repository layer. If
+        // only one of the two had been changed, the second call would refuse.
+        let till = till("owner-sells");
+        till.state.set_session(Some(Session {
+            staff_id: till.owner,
+            code: "OWN-F".into(),
+            name: "Selam".into(),
+            role: "OWNER".into(),
+        }));
+
+        assert!(open_shift(&till.state, "500").unwrap().shift.is_some());
+        let view = open_tab(&till.state, till.waiter, "7", None).unwrap();
+        assert_eq!(view.tabs.len(), 1);
+    }
+
+    #[test]
+    fn a_waiter_still_cannot_work_the_till() {
+        let till = till("waiter-blocked");
+        till.state.set_session(Some(Session {
+            staff_id: till.waiter,
+            code: "WTR-F".into(),
+            name: "Sara".into(),
+            role: "WAITER".into(),
+        }));
+        assert_eq!(
+            open_shift(&till.state, "500").unwrap_err().kind,
+            "NOT_PERMITTED"
+        );
     }
 
     #[test]
@@ -689,11 +738,8 @@ mod tests {
             name: "Selam".into(),
             role: "OWNER".into(),
         }));
-        // An owner may look at the floor, but may not trade on it.
+        // An owner may both look at the floor and trade on it.
         floor_view(&till.state).unwrap();
-        assert_eq!(
-            open_shift(&till.state, "500").unwrap_err().kind,
-            "NOT_PERMITTED"
-        );
+        open_shift(&till.state, "500").unwrap();
     }
 }

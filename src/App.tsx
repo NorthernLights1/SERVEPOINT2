@@ -40,8 +40,13 @@ const CASHIER_NAV: NavEntry[] = [
   { route: "inventory", label: "Inventory", glyph: "▦" },
 ];
 
+// The owner gets everything the cashier gets, plus their own screens. In a
+// small venue they cover the bar themselves, and an owner who could open a
+// night but not close it would strand the till.
 const OWNER_NAV: NavEntry[] = [
   { route: "overview", label: "Overview", glyph: "◑" },
+  { route: "till", label: "Till", glyph: "▤" },
+  { route: "endofday", label: "End of day", glyph: "◫" },
   { route: "reports", label: "Reports", glyph: "▥" },
   { route: "inventory", label: "Inventory", glyph: "▦" },
   { route: "catalogue", label: "Catalogue", glyph: "◈" },

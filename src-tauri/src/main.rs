@@ -12,7 +12,7 @@
 use tauri::Manager;
 
 use servepoint_lib::{
-    bills, commands, corrections, db, floor, overview, reconcile, recovery, report,
+    bills, commands, corrections, db, floor, overview, receiving, reconcile, recovery, report,
     state::AppState, venue,
 };
 
@@ -55,6 +55,7 @@ fn main() {
             commands::cmd_verify_audit,
             floor::cmd_floor_view,
             floor::cmd_inventory_view,
+            receiving::cmd_receive_delivery,
             floor::cmd_open_shift,
             floor::cmd_open_tab,
             floor::cmd_place_order,
@@ -72,7 +73,8 @@ fn main() {
             venue::cmd_edit_sale_item,
             venue::cmd_set_recipe,
             venue::cmd_set_price,
-            venue::cmd_add_opening_stock,
+            venue::cmd_set_product_active,
+            venue::cmd_set_sale_item_active,
             bills::cmd_tab_bill,
             bills::cmd_settle_tab,
             reconcile::cmd_reconciliation_view,

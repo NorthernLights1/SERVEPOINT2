@@ -223,9 +223,28 @@ export interface StockLine {
   tracked: boolean;
 }
 
+/** One past delivery. The batch is the record's own id — nobody types one. */
+export interface DeliveryLine {
+  batch: number;
+  name: string;
+  quantity: string;
+  unit: string;
+  cost: string;
+  received: string;
+}
+
 export interface InventoryView {
   lines: StockLine[];
   totalValue: string;
+  /** What came in recently, newest first. */
+  deliveries: DeliveryLine[];
+}
+
+/** A crate arriving. The per-unit rate is derived from the total, never typed. */
+export interface DeliveryForm {
+  productId: number;
+  quantityMilli: number;
+  totalCost: string;
 }
 
 export interface SlipLine {
@@ -364,6 +383,11 @@ export interface ProductLine {
   saleItemId: number | null;
   /** What it sells for, already formatted. Null when it is stock only. */
   price: string | null;
+  /**
+   * The same amount unformatted — "1200.00" — which is what Rust reads back.
+   * An edit box filled from `price` would send "1,200.00 ETB" and be refused.
+   */
+  priceValue: string | null;
   contentMeasure: Measure;
   /** How much one counted unit holds, formatted: "750". Empty when none. */
   contentPerUnit: string;
@@ -403,6 +427,8 @@ export interface SaleItemLine {
   active: boolean;
   /** Null until somebody prices it. */
   price: string | null;
+  /** The same amount unformatted, for an edit box. See {@link ProductLine}. */
+  priceValue: string | null;
   recipe: RecipeLineView[];
   sellable: boolean;
 }
@@ -466,12 +492,6 @@ export interface RecipeLineForm {
   inMeasure?: boolean;
 }
 
-export interface OpeningStockForm {
-  productId: number;
-  quantityMilli: number;
-  /** As typed: "42.50". Rust parses it; this file never does. */
-  unitCost: string;
-}
 
 /* -------------------------------------------------------------------------- */
 /* End of the night                                                            */
@@ -640,6 +660,8 @@ export const api = {
 
   floorView: () => call<FloorView>("cmd_floor_view"),
   inventoryView: () => call<InventoryView>("cmd_inventory_view"),
+  receiveDelivery: (form: DeliveryForm) =>
+    call<InventoryView>("cmd_receive_delivery", { form }),
   openShift: (openingFloat: string) => call<FloorView>("cmd_open_shift", { openingFloat }),
   openTab: (waiterId: number, reference: string, contact?: string) =>
     call<FloorView>("cmd_open_tab", { waiterId, reference, contact: contact ?? null }),
@@ -706,7 +728,12 @@ export const api = {
     call<SetupView>("cmd_edit_sale_item", { saleItemId, form }),
   setRecipe: (saleItemId: number, lines: RecipeLineForm[]) =>
     call<SetupView>("cmd_set_recipe", { saleItemId, lines }),
+  /** Take a shelf item off the catalogue, or bring it back. Never a delete. */
+  setProductActive: (productId: number, active: boolean) =>
+    call<SetupView>("cmd_set_product_active", { productId, active }),
+  /** Take a drink off the menu, or put it back. Never a delete. */
+  setSaleItemActive: (saleItemId: number, active: boolean) =>
+    call<SetupView>("cmd_set_sale_item_active", { saleItemId, active }),
   setPrice: (saleItemId: number, price: string) =>
     call<SetupView>("cmd_set_price", { saleItemId, price }),
-  addOpeningStock: (form: OpeningStockForm) => call<SetupView>("cmd_add_opening_stock", { form }),
 };

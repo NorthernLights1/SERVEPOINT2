@@ -1,6 +1,6 @@
 use servepoint_lib::commissioning::{
-    self, BaseUnit, Destination, NewProduct, NewSaleItem, NewStaff, OpeningStock, ProductUpdate,
-    RecipeLine, SaleItemUpdate,
+    self, BaseUnit, Destination, NewProduct, NewSaleItem, NewStaff, ProductUpdate, RecipeLine,
+    SaleItemUpdate,
 };
 use servepoint_lib::repo::{catalogue, staff};
 use servepoint_lib::{Milli, Money};
@@ -460,63 +460,6 @@ fn a_failed_recipe_audit_leaves_the_previous_version_open() {
 }
 
 #[test]
-fn opening_stock_sets_initial_cost_posts_once_and_audits_in_one_commit() {
-    let mut venue = venue();
-    let product =
-        commissioning::create_product(&mut venue.conn, venue.owner, &beer(), NOW).unwrap();
-
-    let opening = commissioning::record_opening_stock(
-        &mut venue.conn,
-        venue.owner,
-        &OpeningStock {
-            product_id: product.entity_id,
-            quantity: Milli::from_units(24),
-            unit_cost: Money::from_minor(2_500),
-        },
-        NOW + 1,
-    )
-    .unwrap();
-    assert!(opening.entity_id > 0);
-    assert_eq!(
-        servepoint_lib::repo::stock::on_hand(&venue.conn, product.entity_id).unwrap(),
-        Milli::from_units(24)
-    );
-    assert_eq!(
-        catalogue::product(&venue.conn, product.entity_id)
-            .unwrap()
-            .avg_cost,
-        Money::from_minor(2_500)
-    );
-    let recorded: (String, i64, i64) = venue
-        .conn
-        .query_row(
-            "SELECT a.action, m.quantity_milli, m.unit_cost_minor
-               FROM audit_log a JOIN stock_movements m ON m.id = a.entity_id
-              WHERE a.action = 'OPENING_STOCK_RECORDED'",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        )
-        .unwrap();
-    assert_eq!(recorded, ("OPENING_STOCK_RECORDED".into(), 24_000, 2_500));
-
-    let repeated = commissioning::record_opening_stock(
-        &mut venue.conn,
-        venue.owner,
-        &OpeningStock {
-            product_id: product.entity_id,
-            quantity: Milli::ONE,
-            unit_cost: Money::from_minor(2_500),
-        },
-        NOW + 2,
-    )
-    .unwrap_err();
-    assert!(
-        repeated.to_string().contains("already has stock history"),
-        "got: {repeated}"
-    );
-}
-
-#[test]
 fn owner_updates_to_staff_products_and_sale_items_store_before_and_after_facts() {
     let mut venue = venue();
     let waiter = commissioning::create_staff(
@@ -671,39 +614,5 @@ fn a_rejected_price_does_not_close_the_current_price_or_add_an_audit_entry() {
                 .get::<_, i64>(0))
             .unwrap(),
         before_audit
-    );
-}
-
-#[test]
-fn an_opening_stock_audit_failure_rolls_back_both_cost_and_movement() {
-    let mut venue = venue();
-    let product =
-        commissioning::create_product(&mut venue.conn, venue.owner, &beer(), NOW).unwrap();
-    venue
-        .conn
-        .execute_batch(
-            "CREATE TEMP TRIGGER fail_opening_audit BEFORE INSERT ON audit_log
-             WHEN NEW.action = 'OPENING_STOCK_RECORDED'
-             BEGIN SELECT RAISE(ABORT, 'injected opening audit failure'); END;",
-        )
-        .unwrap();
-
-    commissioning::record_opening_stock(
-        &mut venue.conn,
-        venue.owner,
-        &OpeningStock {
-            product_id: product.entity_id,
-            quantity: Milli::from_units(24),
-            unit_cost: Money::from_minor(2_500),
-        },
-        NOW + 1,
-    )
-    .unwrap_err();
-
-    let product = catalogue::product(&venue.conn, product.entity_id).unwrap();
-    assert_eq!(product.avg_cost, Money::ZERO);
-    assert_eq!(
-        servepoint_lib::repo::stock::on_hand(&venue.conn, product.id).unwrap(),
-        Milli::ZERO
     );
 }

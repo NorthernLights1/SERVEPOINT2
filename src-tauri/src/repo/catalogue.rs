@@ -305,6 +305,21 @@ pub fn link_twin(conn: &Connection, sale_item_id: i64, product_id: i64) -> Resul
     Ok(())
 }
 
+/// The menu entry that sells this product one for one, if there is one.
+///
+/// The pair share a name — [`link_twin`]'s caller copies it across — so a
+/// rename of one that misses the other leaves the till still offering the old
+/// name while the shelf shows the new one.
+pub fn twin_of(conn: &Connection, product_id: i64) -> Result<Option<i64>> {
+    Ok(conn
+        .query_row(
+            "SELECT id FROM sale_items WHERE from_product_id = ?1",
+            [product_id],
+            |row| row.get(0),
+        )
+        .optional()?)
+}
+
 pub fn update_sale_item(
     conn: &Connection,
     id: i64,
@@ -326,6 +341,88 @@ pub fn update_sale_item(
         return Err(RepoError::Missing { what: "sale item" });
     }
     Ok(())
+}
+
+/// Take something off the list, or put it back.
+///
+/// **Nothing in the catalogue is ever deleted** — the schema refuses it
+/// outright, because an order line from last year names a product, and a row
+/// that vanished would take the meaning of that line with it. Removing is
+/// setting `active = 0`: it leaves the till and the shelf, and everything
+/// already printed still reads correctly.
+pub fn set_product_active(conn: &Connection, id: i64, active: bool) -> Result<()> {
+    let changed = guarded!(conn.execute(
+        "UPDATE products SET active = ?2 WHERE id = ?1",
+        rusqlite::params![id, i64::from(active)],
+    ))?;
+    if changed == 0 {
+        return Err(RepoError::Missing { what: "product" });
+    }
+    Ok(())
+}
+
+/// Take a drink off the menu, or put it back. See [`set_product_active`].
+pub fn set_sale_item_active(conn: &Connection, id: i64, active: bool) -> Result<()> {
+    let changed = guarded!(conn.execute(
+        "UPDATE sale_items SET active = ?2 WHERE id = ?1",
+        rusqlite::params![id, i64::from(active)],
+    ))?;
+    if changed == 0 {
+        return Err(RepoError::Missing { what: "sale item" });
+    }
+    Ok(())
+}
+
+/// The live drink, if any, that still pours this product.
+///
+/// Deactivating an ingredient silently breaks every drink made from it — the
+/// recipe still names it, the till still offers the drink, and the sale fails
+/// at the shelf. Naming the drink lets the refusal say what to fix.
+pub fn poured_into(conn: &Connection, product_id: i64) -> Result<Option<String>> {
+    use rusqlite::OptionalExtension;
+    Ok(conn
+        .query_row(
+            "SELECT s.name
+               FROM recipe_lines l
+               JOIN recipes    r ON r.id = l.recipe_id
+               JOIN sale_items s ON s.id = r.sale_item_id
+              WHERE l.product_id = ?1
+                AND r.effective_to IS NULL
+                AND s.active = 1
+              LIMIT 1",
+            [product_id],
+            |row| row.get(0),
+        )
+        .optional()?)
+}
+
+/// Whether a drink is sitting on a tab nobody has settled yet.
+///
+/// Removing it there would leave the floor holding a line for something the
+/// till no longer sells, mid-service.
+pub fn on_an_open_tab(conn: &Connection, sale_item_id: i64) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM order_lines l
+               JOIN orders o ON o.id = l.order_id
+               JOIN tabs   t ON t.id = o.tab_id
+              WHERE l.sale_item_id = ?1 AND t.status = 'OPEN')",
+        [sale_item_id],
+        |row| row.get(0),
+    )?)
+}
+
+/// Everything ever on the shelf, removed items included.
+///
+/// The Catalogue needs this rather than [`products`]: something removed has to
+/// stay visible there, or there is no way to bring it back and no way to see
+/// that it was taken off. Everywhere else wants the active list.
+pub fn every_product(conn: &Connection) -> Result<Vec<Product>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {PRODUCT_COLUMNS} FROM products ORDER BY category, name"
+    ))?;
+    let rows = stmt.query_map([], read_product)?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
 pub fn products(conn: &Connection) -> Result<Vec<Product>> {

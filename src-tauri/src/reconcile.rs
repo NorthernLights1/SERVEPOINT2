@@ -20,7 +20,7 @@
 use rusqlite::Connection;
 
 use crate::commands::{require_session, CommandError, ShiftView};
-use crate::floor::require_cashier;
+use crate::floor::require_till;
 use crate::ledger::{self, Event};
 use crate::repo::{cash, shifts, staff};
 use crate::settings::Settings;
@@ -227,7 +227,7 @@ pub fn settle_waiter(
     amount: &str,
     reason: Option<&str>,
 ) -> Result<ReconciliationView> {
-    let session = require_cashier(state)?;
+    let session = require_till(state)?;
     let now = now_ms();
     let amount = Money::parse(amount)
         .map_err(|error| CommandError::refused(format!("Handed over: {error}")))?;
@@ -305,7 +305,7 @@ pub fn settle_waiter(
 /// Stop the night taking new trade. Counting the drawer and sealing the night
 /// happen after this.
 pub fn begin_closing(state: &AppState) -> Result<ReconciliationView> {
-    let session = require_cashier(state)?;
+    let session = require_till(state)?;
     let now = now_ms();
     state.with_db_mut(|conn| -> Result<()> {
         let shift = shifts::active(conn)?
@@ -363,7 +363,7 @@ pub struct ClosedNight {
 /// stored, the night does not close. A closed night missing its only
 /// fraud-control document is not a state this system has.
 pub fn close_night(state: &AppState, counted_cash: &str) -> Result<ClosedNight> {
-    let session = require_cashier(state)?;
+    let session = require_till(state)?;
     let now = now_ms();
     let counted = Money::parse(counted_cash)
         .map_err(|error| CommandError::refused(format!("Counted cash: {error}")))?;

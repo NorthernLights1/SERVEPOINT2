@@ -454,11 +454,7 @@ fn like_pattern(query: &str) -> String {
 }
 
 fn require_cashier(conn: &Connection, id: i64) -> Result<()> {
-    let person = staff::find(conn, id)?;
-    if !person.active || person.role != staff::Role::Cashier {
-        return super::refuse("an active cashier must operate tabs");
-    }
-    Ok(())
+    staff::require_till_operator(conn, id, "operate tabs")
 }
 
 fn require_waiter(conn: &Connection, id: i64) -> Result<()> {
@@ -617,14 +613,21 @@ mod tests {
             bad_waiter.to_string().contains("active waiter"),
             "got: {bad_waiter}"
         );
-        let owner_operating = open(
+        // The owner works the till too, so they may open a tab; a waiter
+        // holds tabs but never opens them.
+        open(
             &bar.conn,
             &new_tab(shift.id, bar.sara, Reference::table("6"), bar.owner),
         )
+        .unwrap();
+        let waiter_operating = open(
+            &bar.conn,
+            &new_tab(shift.id, bar.sara, Reference::table("8"), bar.dawit),
+        )
         .unwrap_err();
         assert!(
-            owner_operating.to_string().contains("active cashier"),
-            "got: {owner_operating}"
+            waiter_operating.to_string().contains("cashier or owner"),
+            "got: {waiter_operating}"
         );
     }
 
@@ -834,10 +837,10 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("active waiter"));
-        assert!(transfer(&bar.conn, &request(bar.dawit, bar.owner))
+        assert!(transfer(&bar.conn, &request(bar.dawit, bar.sara))
             .unwrap_err()
             .to_string()
-            .contains("active cashier"));
+            .contains("cashier or owner"));
 
         bar.conn
             .execute(

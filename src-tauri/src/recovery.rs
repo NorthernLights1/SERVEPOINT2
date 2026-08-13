@@ -11,7 +11,7 @@
 //! there, never a guess this code makes on their behalf.
 
 use crate::commands::{require_session, CommandError};
-use crate::floor::require_cashier;
+use crate::floor::require_till;
 use crate::repo::{orders, receipts, staff, tabs};
 use crate::state::AppState;
 use crate::{correction, trading};
@@ -84,7 +84,7 @@ pub fn recovery_view(state: &AppState) -> Result<RecoveryView> {
 /// Stock posts exactly as it would for a printed issue; the failed attempts
 /// stay as append-only evidence that it happened.
 pub fn resolve_handwritten(state: &AppState, order_id: i64) -> Result<RecoveryView> {
-    let session = require_cashier(state)?;
+    let session = require_till(state)?;
     let now = now_ms();
     state.with_db_mut(|conn| -> Result<()> {
         match frozen_correction(conn, order_id)? {
@@ -111,7 +111,7 @@ pub fn resolve_handwritten(state: &AppState, order_id: i64) -> Result<RecoveryVi
 /// Every number on this attempt is voided rather than reused, and the draft
 /// returns to the till to be rung again.
 pub fn resolve_non_print(state: &AppState, order_id: i64) -> Result<RecoveryView> {
-    let session = require_cashier(state)?;
+    let session = require_till(state)?;
     let now = now_ms();
     state.with_db_mut(|conn| -> Result<()> {
         match frozen_correction(conn, order_id)? {

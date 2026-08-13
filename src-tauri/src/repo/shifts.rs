@@ -299,11 +299,7 @@ pub fn is_overdue(shift: &Shift, now: i64) -> bool {
 }
 
 fn require_cashier(conn: &Connection, id: i64) -> Result<()> {
-    let person = staff::find(conn, id)?;
-    if !person.active || person.role != staff::Role::Cashier {
-        return super::refuse("an active cashier must operate the shift");
-    }
-    Ok(())
+    staff::require_till_operator(conn, id, "operate the shift")
 }
 
 use rusqlite::OptionalExtension;
@@ -366,12 +362,13 @@ mod tests {
     }
 
     #[test]
-    fn only_an_active_cashier_can_operate_a_shift() {
+    fn only_an_active_cashier_or_owner_can_operate_a_shift() {
         let bar = fixture::bar();
-        for actor in [bar.owner, bar.sara] {
-            let err = open(&bar.conn, &request("2025-07-31", actor, 0)).unwrap_err();
-            assert!(err.to_string().contains("active cashier"), "got: {err}");
-        }
+        // The owner covers the bar in a small venue, so they may open a night.
+        open(&bar.conn, &request("2025-07-30", bar.owner, 0)).unwrap();
+        // A waiter never touches the till.
+        let err = open(&bar.conn, &request("2025-07-31", bar.sara, 0)).unwrap_err();
+        assert!(err.to_string().contains("cashier or owner"), "got: {err}");
 
         staff::set_active(&bar.conn, bar.cashier, false, NOW).unwrap();
         let err = open(&bar.conn, &request("2025-07-31", bar.cashier, 0)).unwrap_err();
@@ -479,11 +476,13 @@ mod tests {
     }
 
     #[test]
-    fn owner_cannot_begin_end_of_day() {
+    fn a_waiter_cannot_begin_end_of_day() {
+        // The owner may — they can work the till — but a waiter may not, and
+        // the shift must be left untouched by the attempt.
         let bar = fixture::bar();
         let shift = open(&bar.conn, &request("2025-07-31", bar.cashier, 0)).unwrap();
-        let err = begin_closing(&bar.conn, shift.id, bar.owner).unwrap_err();
-        assert!(err.to_string().contains("active cashier"), "got: {err}");
+        let err = begin_closing(&bar.conn, shift.id, bar.sara).unwrap_err();
+        assert!(err.to_string().contains("cashier or owner"), "got: {err}");
         assert_eq!(find(&bar.conn, shift.id).unwrap().status, Status::Open);
     }
 }

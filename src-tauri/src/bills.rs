@@ -14,7 +14,7 @@ use rusqlite::Connection;
 
 use crate::bill::Bill;
 use crate::commands::CommandError;
-use crate::floor::require_cashier;
+use crate::floor::require_till;
 use crate::repo::{shifts, staff, tabs};
 use crate::settings::{keys, Settings};
 use crate::settlement::{self, CloseTab};
@@ -120,7 +120,7 @@ pub fn settle_tab(
     comp_reason: Option<&str>,
     customer_tin: Option<&str>,
 ) -> Result<SettledBill> {
-    let session = require_cashier(state)?;
+    let session = require_till(state)?;
     let now = now_ms();
     // An empty box on screen is not a reason. Treat it as no comp at all,
     // rather than sending a blank string down to be refused.

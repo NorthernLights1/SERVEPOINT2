@@ -22,11 +22,17 @@ import type {
   StrandedPrint,
 } from "../api";
 import { api, reason, ServePointError } from "../api";
-import { Banner, Card, Chip, Empty, Field, Loading, PageHead } from "../ui";
+import { Banner, Card, Chip, Empty, Field, Loading, PageHead, Segmented } from "../ui";
 import { OrderCorrection } from "./OrderCorrection";
 
 /** Quantities cross to Rust as thousandths. This is a unit, not a calculation. */
 const MILLI = 1000;
+
+/** The one conversion the window is allowed to do: units into thousandths. */
+function toMilli(text: string): number {
+  const units = Number(text);
+  return Number.isFinite(units) ? Math.round(units * MILLI) : 0;
+}
 
 /* ========================================================================== */
 
@@ -663,13 +669,126 @@ function Settle({ tabId, onSettled }: { tabId: number; onSettled: () => Promise<
   );
 }
 
+/**
+ * Two ways of looking at one shelf.
+ *
+ * `items` is what somebody standing at the bar needs: how many are there, and
+ * what is about to run out. `value` is what the same shelf is worth at cost,
+ * which is a buying question rather than a pouring one. They are the same
+ * ledger read two ways — the toggle changes nothing about the figures, only
+ * which of them is worth looking at right now.
+ */
+type ShelfView = "items" | "value";
+
+/**
+ * Booking in a delivery.
+ *
+ * The cost asked for is what the whole lot cost, exactly as written on the
+ * receipt — the per-unit rate is worked out from it in Rust. Asking for both
+ * invites two numbers that disagree, and the shelf's value is built on them.
+ */
+function Receive({ view, onReceived }: { view: InventoryView; onReceived: (next: InventoryView) => void }) {
+  const shelf = view.lines.filter((line) => line.tracked);
+  const [picked, setPicked] = useState<number>();
+  const [quantity, setQuantity] = useState("");
+  const [cost, setCost] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string>();
+
+  // Start on whatever is running out, because that is why anybody opens this.
+  const chosen = picked ?? shelf.find((line) => line.low)?.productId ?? shelf[0]?.productId;
+  const product = shelf.find((line) => line.productId === chosen);
+
+  if (!product) return null;
+
+  const unit = product.unit.toLowerCase();
+  const ready = quantity.trim() !== "" && cost.trim() !== "";
+
+  return (
+    <Card
+      title="Receive a delivery"
+      blurb="Every delivery is its own batch, numbered for you. Nothing to name, nobody to file it under."
+    >
+      {problem && (
+        <Banner tone="bad" title="That delivery was not recorded">
+          {problem}
+        </Banner>
+      )}
+      <Field label="What arrived">
+        <select
+          className="select"
+          value={chosen}
+          onChange={(event) => setPicked(Number(event.target.value))}
+        >
+          {shelf.map((line) => (
+            <option key={line.productId} value={line.productId}>
+              {line.name}
+              {line.low ? " — running low" : ""}
+            </option>
+          ))}
+        </select>
+      </Field>
+      <div className="grid grid--halves">
+        <Field label={`How many ${unit}`} help={`In ${unit}, the way the shelf counts them.`}>
+          <input
+            className="input"
+            inputMode="decimal"
+            value={quantity}
+            onChange={(event) => setQuantity(event.target.value)}
+          />
+        </Field>
+        <Field
+          label="What the lot cost"
+          help="The whole delivery. The price per unit works itself out from this."
+        >
+          <input
+            className="input"
+            inputMode="decimal"
+            value={cost}
+            onChange={(event) => setCost(event.target.value)}
+          />
+        </Field>
+      </div>
+      <button
+        type="button"
+        className="btn btn--primary"
+        disabled={busy || !ready}
+        onClick={async () => {
+          setBusy(true);
+          setProblem(undefined);
+          try {
+            onReceived(
+              await api.receiveDelivery({
+                productId: product.productId,
+                quantityMilli: toMilli(quantity),
+                totalCost: cost,
+              }),
+            );
+            setQuantity("");
+            setCost("");
+          } catch (raw) {
+            setProblem(reason(raw));
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        {busy ? "Adding…" : "Add to the shelf"}
+      </button>
+    </Card>
+  );
+}
+
 export function Inventory() {
   const [view, setView] = useState<InventoryView>();
   const [error, setError] = useState<string>();
+  const [showing, setShowing] = useState<ShelfView>("items");
 
   useEffect(() => {
     api.inventoryView().then(setView).catch((raw) => setError(reason(raw)));
   }, []);
+
+  const low = view?.lines.filter((line) => line.low).length ?? 0;
 
   return (
     <div className="page">
@@ -678,7 +797,28 @@ export function Inventory() {
           eyebrow="Inventory"
           title="What is on the shelf"
           blurb="Stock is worked out from every movement ever recorded, never from a stored figure that can drift."
-          aside={view ? <Chip tone="quiet">{view.totalValue}</Chip> : undefined}
+          aside={
+            view ? (
+              <>
+                <Segmented
+                  label="How to read the shelf"
+                  value={showing}
+                  onChange={(next) => setShowing(next as ShelfView)}
+                  options={[
+                    { value: "items", label: "Items" },
+                    { value: "value", label: "Value" },
+                  ]}
+                />
+                {showing === "value" ? (
+                  <Chip tone="quiet">{view.totalValue}</Chip>
+                ) : (
+                  <Chip tone={low > 0 ? "warn" : "good"}>
+                    {low > 0 ? `${low} running low` : "Nothing low"}
+                  </Chip>
+                )}
+              </>
+            ) : undefined
+          }
         />
         {error && (
           <Banner tone="bad" title="The shelf could not be read">
@@ -705,13 +845,41 @@ export function Inventory() {
                       </span>
                     </span>
                     <span className="row__value">
-                      {line.tracked ? `${line.onHand} · ${line.value}` : "not tracked"}
+                      {!line.tracked
+                        ? "not tracked"
+                        : showing === "value"
+                          ? line.value
+                          : `${line.onHand} ${line.unit.toLowerCase()}`}
                       {line.low && <Chip tone="warn">Low</Chip>}
                     </span>
                   </li>
                 ))}
               </ul>
             )}
+          </Card>
+        )}
+        {view && <Receive view={view} onReceived={setView} />}
+        {view && view.deliveries.length > 0 && (
+          <Card
+            title="What came in"
+            blurb="Each delivery keeps its own batch, so what the shelf is worth can always be traced to what was paid."
+            flush
+          >
+            <ul className="rows">
+              {view.deliveries.map((line) => (
+                <li key={line.batch} className="row row--static">
+                  <span className="row__main">
+                    <strong>
+                      {line.quantity} {line.unit.toLowerCase()} of {line.name}
+                    </strong>
+                    <span className="muted">
+                      {line.received} · batch {line.batch}
+                    </span>
+                  </span>
+                  <span className="row__value">{line.cost}</span>
+                </li>
+              ))}
+            </ul>
           </Card>
         )}
       </div>

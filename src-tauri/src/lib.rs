@@ -33,6 +33,7 @@ pub mod money;
 pub mod overview;
 pub mod printing;
 pub mod quantity;
+pub mod receiving;
 pub mod reconcile;
 pub mod recovery;
 pub mod repo;
