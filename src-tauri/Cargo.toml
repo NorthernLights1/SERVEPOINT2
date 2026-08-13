@@ -30,6 +30,10 @@ chrono = "0.4"
 thiserror = "2"
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
+# Already in the tree — tauri pulls it in. Declared here because a shift report
+# is stored as JSON, and hand-rolling the escaping for text a venue typed is
+# the kind of saving that costs a corrupt report.
+serde_json = "1"
 
 [dev-dependencies]
 # Phase 1 exercises the ledger guarantees over generated trading histories

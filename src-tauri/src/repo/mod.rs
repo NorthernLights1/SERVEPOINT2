@@ -25,6 +25,7 @@ pub mod cash;
 pub mod catalogue;
 pub mod orders;
 pub mod receipts;
+pub mod reports;
 pub mod seq;
 pub mod shifts;
 pub mod staff;

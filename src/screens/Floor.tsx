@@ -17,6 +17,7 @@ import type {
   InventoryView,
   OverviewView,
   PlacedOrder,
+  ReportsView,
   SettledBill,
   StrandedPrint,
 } from "../api";
@@ -719,24 +720,208 @@ export function Inventory() {
 }
 
 export function Reports() {
+  const [view, setView] = useState<ReportsView>();
+  const [error, setError] = useState<string>();
+
+  const load = useCallback((shiftId?: number) => {
+    api
+      .reportsView(shiftId)
+      .then((next) => {
+        setView(next);
+        setError(undefined);
+      })
+      .catch((raw) => setError(reason(raw)));
+  }, []);
+
+  useEffect(() => load(), [load]);
+
+  if (!view) {
+    return error ? (
+      <div className="page">
+        <div className="page__inner">
+          <Banner tone="bad" title="The report could not be read">
+            {error}
+          </Banner>
+        </div>
+      </div>
+    ) : (
+      <Loading what="the reports" />
+    );
+  }
+
+  const report = view.showing;
+
   return (
     <div className="page">
       <div className="page__inner">
         <PageHead
           eyebrow="Reports"
-          title="What the numbers say"
-          blurb="Read on screen. Printing a report on till paper is off unless somebody switches it on."
+          title={report ? `${report.businessDateLabel} — ${report.shiftCode}` : "What the numbers say"}
+          blurb={
+            report
+              ? `Opened ${report.openedAtLabel} by ${report.openedBy}, closed ${report.closedAtLabel} by ${report.closedBy}. Stored when the night was sealed and read back unchanged.`
+              : "Read on screen. Printing a report on till paper is off unless somebody switches it on."
+          }
+          aside={
+            view.nights.length > 1 ? (
+              <select
+                className="select"
+                value={view.showingShiftId ?? ""}
+                onChange={(event) => load(Number(event.target.value))}
+              >
+                {view.nights.map((night) => (
+                  <option key={night.shiftId} value={night.shiftId}>
+                    {night.businessDateLabel} · {night.code}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              report && <Chip tone="quiet">Closed</Chip>
+            )
+          }
         />
-        <Card
-          title="Popular drinks, and how they sell"
-          blurb="By shot, by bottle and inside cocktails — separately, because they are different businesses."
-        >
-          <Empty glyph="▥" title="No nights closed yet">
-            Reports are built from closed shifts, so the first one appears after the first night is
-            reconciled and closed. A closed night is then read back exactly as it was stored, never
-            recalculated — so a report cannot quietly change months later.
-          </Empty>
-        </Card>
+
+        {error && (
+          <Banner tone="bad" title="That night could not be opened">
+            {error}
+          </Banner>
+        )}
+
+        {!report ? (
+          <Card
+            title="Popular drinks, and how they sell"
+            blurb="By shot, by bottle and inside cocktails — separately, because they are different businesses."
+          >
+            {view.nights.length === 0 ? (
+              <Empty glyph="▥" title="No nights closed yet">
+                Reports are built from closed shifts, so the first one appears after the first night
+                is reconciled and closed. A closed night is then read back exactly as it was stored,
+                never recalculated — so a report cannot quietly change months later.
+              </Empty>
+            ) : (
+              <Empty glyph="▥" title="That night has no stored report">
+                It was sealed before this till began storing reports, and the figures are
+                deliberately not reconstructed now — a report assembled after the fact is not the
+                document that was signed. Nights closed from here on are stored as they are sealed.
+              </Empty>
+            )}
+          </Card>
+        ) : (
+          <>
+            <Card
+              title="What was billed"
+              blurb="What customers were charged across the night. Kept apart from the drawer below, because they answer different questions."
+            >
+              <dl className="totals">
+                <dt>Gross sales ({report.tabsSettled} tabs)</dt>
+                <dd>{report.grossSales}</dd>
+                <dt>Service</dt>
+                <dd>{report.serviceCharge}</dd>
+                <dt>Tax</dt>
+                <dd>{report.tax}</dd>
+                <dt>Total billed</dt>
+                <dd>{report.totalBilled}</dd>
+              </dl>
+            </Card>
+
+            <Card
+              title="The drawer"
+              blurb="What the ledger says should have been in it, against what was counted out of it."
+            >
+              <dl className="totals">
+                <dt>Opening float</dt>
+                <dd>{report.openingFloat}</dd>
+                <dt>Cash from waiters</dt>
+                <dd>{report.cashFromWaiters}</dd>
+                <dt>Other movements</dt>
+                <dd>{report.otherMovements}</dd>
+                <dt>Expected</dt>
+                <dd>{report.expectedCash}</dd>
+                <dt>Counted</dt>
+                <dd>{report.countedCash}</dd>
+              </dl>
+              {report.balanced ? (
+                <Chip tone="good">Balanced</Chip>
+              ) : (
+                <Chip tone="warn">
+                  {report.over ? "Over" : "Short"} by {report.variance}
+                </Chip>
+              )}
+            </Card>
+
+            <div className="grid grid--halves">
+              <Card title="Who handed over what" blurb="Every waiter who settled on the night.">
+                {report.waiters.length === 0 ? (
+                  <Empty glyph="◇" title="Nobody settled">
+                    No waiter carried money on this night.
+                  </Empty>
+                ) : (
+                  <ul className="rows">
+                    {report.waiters.map((waiter) => (
+                      <li key={waiter.name} className="row row--static">
+                        <span className="row__main">
+                          <strong>{waiter.name}</strong>
+                          <span className="muted">expected {waiter.expected}</span>
+                        </span>
+                        <span className="row__value">{waiter.cash}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </Card>
+
+              <Card title="What sold" blurb="What actually left the bar, by value.">
+                {report.items.length === 0 ? (
+                  <Empty glyph="↗" title="Nothing was issued">
+                    No order was issued on this night.
+                  </Empty>
+                ) : (
+                  <ul className="rows">
+                    {report.items.map((item) => (
+                      <li key={item.name} className="row row--static">
+                        <span className="row__main">
+                          <strong>{item.name}</strong>
+                          <span className="muted">×{item.quantity}</span>
+                        </span>
+                        <span className="row__value">{item.value}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </Card>
+            </div>
+
+            <Card
+              title="Exceptions"
+              blurb="Everything on this night that somebody has to be able to answer for."
+            >
+              <dl className="totals">
+                <dt>Corrections</dt>
+                <dd>{report.corrections}</dd>
+                <dt>Voids</dt>
+                <dd>{report.voids}</dd>
+                <dt>Comped tabs ({report.compedTabs})</dt>
+                <dd>{report.compedValue}</dd>
+                <dt>Written off</dt>
+                <dd>{report.writtenOff}</dd>
+                <dt>Settled without cash</dt>
+                <dd>{report.nonCash}</dd>
+              </dl>
+            </Card>
+
+            {view.renderedText && (
+              <Card
+                title="The paper"
+                blurb="The report exactly as it was stored on the night — the same text a printed copy carries."
+              >
+                <details>
+                  <summary className="muted">Show what was signed</summary>
+                  <pre className="paper">{view.renderedText}</pre>
+                </details>
+              </Card>
+            )}
+          </>
+        )}
       </div>
     </div>
   );

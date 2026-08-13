@@ -12,7 +12,8 @@
 use tauri::Manager;
 
 use servepoint_lib::{
-    bills, commands, corrections, db, floor, overview, reconcile, recovery, state::AppState, venue,
+    bills, commands, corrections, db, floor, overview, reconcile, recovery, report,
+    state::AppState, venue,
 };
 
 /// The database file inside the app's data directory.
@@ -79,6 +80,7 @@ fn main() {
             reconcile::cmd_begin_closing,
             reconcile::cmd_close_night,
             overview::cmd_overview_view,
+            report::cmd_reports_view,
             recovery::cmd_recovery_view,
             recovery::cmd_resolve_handwritten,
             recovery::cmd_resolve_non_print,

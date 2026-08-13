@@ -529,6 +529,84 @@ export interface OverviewView {
   quiet: boolean;
 }
 
+export interface ReportWaiterLine {
+  name: string;
+  expected: string;
+  cash: string;
+  nonCash: string;
+  writtenOff: string;
+  shortfall: string;
+}
+
+export interface ReportItemLine {
+  name: string;
+  quantity: string;
+  value: string;
+}
+
+/**
+ * A night, frozen at the moment it closed.
+ *
+ * This is the one view in the system that is *not* recalculated on read. It is
+ * stored when the night is sealed and handed back unchanged for ever after, so
+ * what this screen shows is what was signed. Every figure below arrived
+ * already formatted, as usual — but here it was formatted on the night in
+ * question, not today.
+ */
+export interface ShiftReport {
+  venueName: string;
+  shiftCode: string;
+  businessDate: string;
+  businessDateLabel: string;
+  openedAtLabel: string;
+  openedBy: string;
+  closedAtLabel: string;
+  closedBy: string;
+
+  tabsSettled: number;
+  grossSales: string;
+  serviceCharge: string;
+  tax: string;
+  totalBilled: string;
+
+  openingFloat: string;
+  cashFromWaiters: string;
+  otherMovements: string;
+  expectedCash: string;
+  countedCash: string;
+  /** The difference as a positive figure — `over` says which way. */
+  variance: string;
+  over: boolean;
+  balanced: boolean;
+
+  nonCash: string;
+  writtenOff: string;
+
+  waiters: ReportWaiterLine[];
+  items: ReportItemLine[];
+
+  compedTabs: number;
+  compedValue: string;
+  corrections: number;
+  voids: number;
+}
+
+export interface ReportNight {
+  shiftId: number;
+  code: string;
+  businessDate: string;
+  businessDateLabel: string;
+}
+
+export interface ReportsView {
+  nights: ReportNight[];
+  /** The night being read. Null only when no night has ever closed. */
+  showing: ShiftReport | null;
+  showingShiftId: number | null;
+  /** The exact stored paper, for reading what was signed. */
+  renderedText: string | null;
+}
+
 /** What the night came to, once the drawer has been counted. */
 export interface ClosedNight {
   code: string;
@@ -600,6 +678,9 @@ export const api = {
   resolveNonPrint: (orderId: number) => call<RecoveryView>("cmd_resolve_non_print", { orderId }),
 
   overviewView: () => call<OverviewView>("cmd_overview_view"),
+  /** Omit the night to read the most recent one. */
+  reportsView: (shiftId?: number) =>
+    call<ReportsView>("cmd_reports_view", { shiftId: shiftId ?? null }),
   reconciliationView: () => call<ReconciliationView>("cmd_reconciliation_view"),
   settleWaiter: (waiterId: number, method: SettleMethod, amount: string, reason?: string) =>
     call<ReconciliationView>("cmd_settle_waiter", {

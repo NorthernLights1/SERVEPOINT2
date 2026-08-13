@@ -237,6 +237,21 @@ pub fn close(
     find(conn, shift_id)
 }
 
+/// Every night that has been sealed, most recent first.
+///
+/// What the Reports screen lists. A closed night always has a stored report
+/// beside it — §4.3 makes the two one commit — so this is also the list of
+/// reports, without needing to join to them.
+pub fn closed(conn: &Connection) -> Result<Vec<Shift>> {
+    let mut statement = conn.prepare(&format!(
+        "SELECT {COLUMNS} FROM shifts
+          WHERE status = 'CLOSED'
+          ORDER BY business_date DESC"
+    ))?;
+    let rows = statement.query_map([], read)?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
 /// Whether all crash-sensitive print work has been resolved.
 pub fn recovery_complete(conn: &Connection) -> Result<bool> {
     let complete = conn.query_row(

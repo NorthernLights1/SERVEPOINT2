@@ -36,6 +36,7 @@ pub mod quantity;
 pub mod reconcile;
 pub mod recovery;
 pub mod repo;
+pub mod report;
 pub mod resolution;
 pub mod settings;
 pub mod settings_form;

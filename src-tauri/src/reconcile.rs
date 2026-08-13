@@ -356,6 +356,12 @@ pub struct ClosedNight {
 /// The count is recorded as given. Any difference from what the ledger expects
 /// is reported, never reconciled away — a drawer that is short is a fact the
 /// owner needs, not a number to be corrected.
+///
+/// §4.3: closing the shift and storing its report are ONE all-or-nothing
+/// commit. The report is compiled after `shifts::close` and inside the same
+/// transaction, so it reads the sealed counted figure — and if it cannot be
+/// stored, the night does not close. A closed night missing its only
+/// fraud-control document is not a state this system has.
 pub fn close_night(state: &AppState, counted_cash: &str) -> Result<ClosedNight> {
     let session = require_cashier(state)?;
     let now = now_ms();
@@ -381,6 +387,14 @@ pub fn close_night(state: &AppState, counted_cash: &str) -> Result<ClosedNight> 
                     expected.minor(),
                     counted.minor()
                 )),
+        )?;
+        let report = crate::report::freeze(&transaction, shift.id, session.staff_id, now)?;
+        ledger::append(
+            &transaction,
+            &Event::new("SHIFT_REPORT_STORED", "shift_report", now)
+                .about(report.id)
+                .by(session.staff_id)
+                .during(Some(shift.id)),
         )?;
         let settings = Settings::load(&transaction)?;
         transaction.commit()?;

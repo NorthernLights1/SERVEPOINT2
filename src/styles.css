@@ -1303,6 +1303,22 @@ button {
   color: var(--ink);
 }
 
+/* The stored shift report, shown as the till would print it. Monospaced and
+   scrolled rather than reflowed — it is a facsimile of paper, not prose. */
+.paper {
+  margin: var(--gap-3) 0 0;
+  padding: var(--gap-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  color: var(--ink);
+  font-family: ui-monospace, "SFMono-Regular", "Menlo", "Consolas", monospace;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  white-space: pre;
+  overflow-x: auto;
+}
+
 /* A tick box with its explanation beside it, not stranded under the form. */
 .check {
   display: flex;

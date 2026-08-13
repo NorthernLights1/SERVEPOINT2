@@ -123,6 +123,21 @@ impl BusinessCalendar {
     }
 }
 
+/// Format an instant as the wall clock somebody in the venue was reading:
+/// `23:41`. Used on the shift report, where "opened at" and "closed at" mean
+/// the hours the staff actually worked, not UTC.
+///
+/// An instant the local zone cannot represent renders blank rather than
+/// guessing an hour — a report is evidence, and a wrong time on it is worse
+/// than a missing one.
+pub fn clock_label(epoch_ms: i64) -> String {
+    Local
+        .timestamp_millis_opt(epoch_ms)
+        .single()
+        .map(|local| local.format("%H:%M").to_string())
+        .unwrap_or_default()
+}
+
 /// Format a business date for a heading: `2026-08-14` reads as `Fri 14 Aug`.
 pub fn describe(date: NaiveDate) -> String {
     const DAYS: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
