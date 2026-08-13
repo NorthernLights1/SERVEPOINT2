@@ -58,6 +58,9 @@ pub struct Money(i64);
 pub enum MoneyError {
     #[error("money arithmetic overflowed 64 bits")]
     Overflow,
+
+    #[error("that is not an amount of money")]
+    Unreadable,
 }
 
 type Result<T> = std::result::Result<T, MoneyError>;
@@ -82,16 +85,25 @@ impl Money {
     }
 
     pub fn checked_add(self, other: Self) -> Result<Self> {
-        self.0.checked_add(other.0).map(Self).ok_or(MoneyError::Overflow)
+        self.0
+            .checked_add(other.0)
+            .map(Self)
+            .ok_or(MoneyError::Overflow)
     }
 
     pub fn checked_sub(self, other: Self) -> Result<Self> {
-        self.0.checked_sub(other.0).map(Self).ok_or(MoneyError::Overflow)
+        self.0
+            .checked_sub(other.0)
+            .map(Self)
+            .ok_or(MoneyError::Overflow)
     }
 
     /// Multiply by a whole count — a quantity of units, not a fractional rate.
     pub fn checked_mul(self, factor: i64) -> Result<Self> {
-        self.0.checked_mul(factor).map(Self).ok_or(MoneyError::Overflow)
+        self.0
+            .checked_mul(factor)
+            .map(Self)
+            .ok_or(MoneyError::Overflow)
     }
 
     /// `percentage_of(amount, bp)` — a service charge or an exclusive tax.
@@ -151,6 +163,39 @@ impl Money {
         let frac = magnitude % 100;
         format!("{}{whole}.{frac:02}", if negative { "-" } else { "" })
     }
+
+    /// Read an amount somebody typed at the till: `"12.50"` becomes `1250`.
+    ///
+    /// Deliberately strict. This is the one place a human hands the system a
+    /// figure of money, and a lenient parser here is how `"1,250"` quietly
+    /// becomes one. Surrounding spaces are forgiven because a keyboard
+    /// produces them by accident; nothing else is. Negatives are rejected
+    /// outright — no counted amount of cash is below zero, and a subtraction
+    /// dressed up as an entry is a mistake worth refusing.
+    pub fn parse(text: &str) -> Result<Self> {
+        let trimmed = text.trim();
+        let (whole, frac) = trimmed.split_once('.').unwrap_or((trimmed, ""));
+        if whole.is_empty()
+            || frac.len() > 2
+            || !whole.bytes().all(|byte| byte.is_ascii_digit())
+            || !frac.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            return Err(MoneyError::Unreadable);
+        }
+        // "12.5" is twelve-fifty, not twelve and five cents.
+        let cents = match frac.len() {
+            0 => 0,
+            1 => frac.parse::<i64>().unwrap_or(0) * 10,
+            _ => frac.parse::<i64>().unwrap_or(0),
+        };
+        whole
+            .parse::<i64>()
+            .ok()
+            .and_then(|major| major.checked_mul(100))
+            .and_then(|major| major.checked_add(cents))
+            .map(Self)
+            .ok_or(MoneyError::Overflow)
+    }
 }
 
 impl fmt::Display for Money {
@@ -175,6 +220,18 @@ mod tests {
 
     fn m(minor: i64) -> Money {
         Money::from_minor(minor)
+    }
+
+    #[test]
+    fn a_typed_amount_is_read_strictly_or_refused() {
+        assert_eq!(Money::parse("12.50").unwrap(), m(1_250));
+        assert_eq!(Money::parse("  500 ").unwrap(), m(50_000));
+        assert_eq!(Money::parse("12.5").unwrap(), m(1_250)); // twelve-fifty
+        assert_eq!(Money::parse("0").unwrap(), Money::ZERO);
+        // Everything a keypad can produce that is not a plain amount.
+        for bad in ["", "-5", "1,250", "12.5o", "12.505", ".50", "1e3", "12 50"] {
+            assert!(Money::parse(bad).is_err(), "accepted {bad:?}");
+        }
     }
 
     #[test]
@@ -204,8 +261,14 @@ mod tests {
 
     #[test]
     fn zero_rate_and_zero_amount_are_zero() {
-        assert_eq!(m(9999).percentage_of(BasisPoints::ZERO).unwrap(), Money::ZERO);
-        assert_eq!(Money::ZERO.percentage_of(BasisPoints(1500)).unwrap(), Money::ZERO);
+        assert_eq!(
+            m(9999).percentage_of(BasisPoints::ZERO).unwrap(),
+            Money::ZERO
+        );
+        assert_eq!(
+            Money::ZERO.percentage_of(BasisPoints(1500)).unwrap(),
+            Money::ZERO
+        );
     }
 
     #[test]
@@ -237,7 +300,10 @@ mod tests {
     #[test]
     fn overflow_is_an_error_not_a_wrap() {
         assert_eq!(m(i64::MAX).checked_add(m(1)), Err(MoneyError::Overflow));
-        assert_eq!(m(i64::MAX).percentage_of(BasisPoints(10_000)), Err(MoneyError::Overflow));
+        assert_eq!(
+            m(i64::MAX).percentage_of(BasisPoints(10_000)),
+            Err(MoneyError::Overflow)
+        );
     }
 
     #[test]

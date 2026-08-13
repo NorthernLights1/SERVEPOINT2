@@ -13,10 +13,12 @@
 //! the count in the open, with a reason, on its own block of the shift report
 //! — never waiving the check.
 
+use std::collections::BTreeMap;
+
 use rusqlite::Connection;
 
 use super::{guarded, Result};
-use crate::{Milli, Money};
+use crate::{money::MoneyError, Milli, Money};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -89,11 +91,6 @@ impl<'a> Movement<'a> {
 
     pub fn for_purchase(mut self, purchase_id: i64) -> Self {
         self.purchase_id = Some(purchase_id);
-        self
-    }
-
-    pub fn for_count(mut self, stock_count_id: i64) -> Self {
-        self.stock_count_id = Some(stock_count_id);
         self
     }
 
@@ -170,11 +167,24 @@ impl Level {
     }
 
     /// What the shelf is worth at the weighted average cost.
-    pub fn value(&self) -> Money {
-        Money::from_minor(
-            self.on_hand.thousandths().saturating_mul(self.avg_cost.minor()).saturating_add(500)
-                / 1_000,
-        )
+    pub fn value(&self) -> std::result::Result<Money, MoneyError> {
+        let scaled = i128::from(self.on_hand.thousandths())
+            .checked_mul(i128::from(self.avg_cost.minor()))
+            .ok_or(MoneyError::Overflow)?;
+        let rounded_magnitude = scaled
+            .unsigned_abs()
+            .checked_add(500)
+            .ok_or(MoneyError::Overflow)?
+            / 1_000;
+        let rounded = i128::try_from(rounded_magnitude).map_err(|_| MoneyError::Overflow)?;
+        let signed = if scaled.is_negative() {
+            rounded.checked_neg().ok_or(MoneyError::Overflow)?
+        } else {
+            rounded
+        };
+        let minor = i64::try_from(signed).map_err(|_| MoneyError::Overflow)?;
+
+        Ok(Money::from_minor(minor))
     }
 }
 
@@ -215,7 +225,9 @@ pub fn low(conn: &Connection) -> Result<Vec<Level>> {
     let mut found: Vec<Level> = levels(conn)?.into_iter().filter(Level::is_low).collect();
     // Deepest into the threshold first: a product already at zero matters more
     // than one a bottle away from it.
-    found.sort_by_key(|level| level.on_hand.thousandths() - level.threshold.thousandths());
+    found.sort_by_key(|level| {
+        i128::from(level.on_hand.thousandths()) - i128::from(level.threshold.thousandths())
+    });
     Ok(found)
 }
 
@@ -239,8 +251,19 @@ pub struct Shortage {
 /// Products that do not track inventory are skipped — nobody counts them, so
 /// there is no number to be short of.
 pub fn shortages(conn: &Connection, wanted: &[(i64, Milli)]) -> Result<Vec<Shortage>> {
-    let mut found = Vec::new();
+    let mut totals = BTreeMap::<i64, Milli>::new();
     for (product_id, quantity) in wanted {
+        if quantity.is_zero() || quantity.is_negative() {
+            return super::refuse("stock requirements must be greater than zero");
+        }
+        let entry = totals.entry(*product_id).or_default();
+        *entry = entry
+            .checked_add(*quantity)
+            .map_err(|_| super::RepoError::Refused("stock requirements are too large".into()))?;
+    }
+
+    let mut found = Vec::new();
+    for (product_id, quantity) in totals {
         let (name, tracks): (String, bool) = conn.query_row(
             "SELECT name, tracks_inventory FROM products WHERE id = ?1",
             [product_id],
@@ -249,9 +272,14 @@ pub fn shortages(conn: &Connection, wanted: &[(i64, Milli)]) -> Result<Vec<Short
         if !tracks {
             continue;
         }
-        let available = on_hand(conn, *product_id)?;
+        let available = on_hand(conn, product_id)?;
         if available.thousandths() < quantity.thousandths() {
-            found.push(Shortage { product_id: *product_id, name, wanted: *quantity, available });
+            found.push(Shortage {
+                product_id,
+                name,
+                wanted: quantity,
+                available,
+            });
         }
     }
     Ok(found)
@@ -261,7 +289,12 @@ pub fn shortages(conn: &Connection, wanted: &[(i64, Milli)]) -> Result<Vec<Short
 pub fn shortage_message(shortages: &[Shortage]) -> String {
     let listed: Vec<String> = shortages
         .iter()
-        .map(|short| format!("{} (need {}, have {})", short.name, short.wanted, short.available))
+        .map(|short| {
+            format!(
+                "{} (need {}, have {})",
+                short.name, short.wanted, short.available
+            )
+        })
         .collect();
     format!("Not enough stock: {}", listed.join("; "))
 }
@@ -277,8 +310,14 @@ mod tests {
         fixture::stock_up(&bar.conn, bar.beer, 24_000, bar.owner);
         post(
             &bar.conn,
-            &Movement::new(bar.beer, Kind::Damage, Milli::from_units(-2), NOW, bar.owner)
-                .because("crate dropped"),
+            &Movement::new(
+                bar.beer,
+                Kind::Damage,
+                Milli::from_units(-2),
+                NOW,
+                bar.owner,
+            )
+            .because("crate dropped"),
         )
         .unwrap();
         assert_eq!(on_hand(&bar.conn, bar.beer).unwrap(), Milli::from_units(22));
@@ -324,7 +363,9 @@ mod tests {
         // trusted, and "never stored" would buy nothing.
         let bar = fixture::bar();
         fixture::stock_up(&bar.conn, bar.beer, 10_000, bar.owner);
-        let edit = bar.conn.execute("UPDATE stock_movements SET quantity_milli = 99", []);
+        let edit = bar
+            .conn
+            .execute("UPDATE stock_movements SET quantity_milli = 99", []);
         let wipe = bar.conn.execute("DELETE FROM stock_movements", []);
         assert!(edit.is_err() && wipe.is_err());
     }
@@ -336,7 +377,10 @@ mod tests {
         // No tonic at all.
         let short = shortages(
             &bar.conn,
-            &[(bar.gin, Milli::from_units(2)), (bar.tonic, Milli::from_thousandths(500))],
+            &[
+                (bar.gin, Milli::from_units(2)),
+                (bar.tonic, Milli::from_thousandths(500)),
+            ],
         )
         .unwrap();
         assert_eq!(short.len(), 2, "got: {short:?}");
@@ -346,16 +390,56 @@ mod tests {
     fn exactly_enough_stock_is_not_a_shortage() {
         let bar = fixture::bar();
         fixture::stock_up(&bar.conn, bar.gin, 2_000, bar.owner);
-        assert!(shortages(&bar.conn, &[(bar.gin, Milli::from_units(2))]).unwrap().is_empty());
+        assert!(shortages(&bar.conn, &[(bar.gin, Milli::from_units(2))])
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn availability_aggregates_duplicate_product_requirements() {
+        let bar = fixture::bar();
+        fixture::stock_up(&bar.conn, bar.beer, 1_000, bar.owner);
+
+        let short = shortages(
+            &bar.conn,
+            &[
+                (bar.beer, Milli::from_thousandths(750)),
+                (bar.beer, Milli::from_thousandths(750)),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(short.len(), 1);
+        assert_eq!(short[0].wanted, Milli::from_thousandths(1_500));
+        assert_eq!(short[0].available, Milli::ONE);
+    }
+
+    #[test]
+    fn availability_refuses_an_aggregate_that_overflows() {
+        let bar = fixture::bar();
+        let result = shortages(
+            &bar.conn,
+            &[
+                (bar.beer, Milli::from_thousandths(i64::MAX)),
+                (bar.beer, Milli::ONE),
+            ],
+        );
+
+        assert!(result.is_err());
     }
 
     #[test]
     fn a_product_nobody_counts_can_never_be_short() {
         let bar = fixture::bar();
         bar.conn
-            .execute("UPDATE products SET tracks_inventory = 0 WHERE id = ?1", [bar.beer])
+            .execute(
+                "UPDATE products SET tracks_inventory = 0 WHERE id = ?1",
+                [bar.beer],
+            )
             .unwrap();
-        assert!(shortages(&bar.conn, &[(bar.beer, Milli::from_units(500))]).unwrap().is_empty());
+        assert!(shortages(&bar.conn, &[(bar.beer, Milli::from_units(500))])
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -372,13 +456,59 @@ mod tests {
     }
 
     #[test]
+    fn low_stock_priority_does_not_overflow_at_extreme_ledger_values() {
+        let bar = fixture::bar();
+        bar.conn
+            .execute(
+                "UPDATE products SET low_stock_threshold_milli = ?2 WHERE id = ?1",
+                rusqlite::params![bar.gin, i64::MAX],
+            )
+            .unwrap();
+        post(
+            &bar.conn,
+            &Movement::new(
+                bar.gin,
+                Kind::Loss,
+                Milli::from_thousandths(i64::MIN),
+                NOW,
+                bar.owner,
+            )
+            .because("overflow boundary fixture"),
+        )
+        .unwrap();
+
+        let running_out = low(&bar.conn).unwrap();
+        assert_eq!(running_out[0].product_id, bar.gin);
+    }
+
+    #[test]
     fn a_shelf_is_valued_at_the_weighted_average() {
         // 4 bottles at a 100.00 average is 400.00.
         let bar = fixture::bar();
         fixture::stock_up(&bar.conn, bar.beer, 4_000, bar.owner);
-        let level =
-            levels(&bar.conn).unwrap().into_iter().find(|l| l.product_id == bar.beer).unwrap();
-        assert_eq!(level.value().minor(), 40_000);
+        let level = levels(&bar.conn)
+            .unwrap()
+            .into_iter()
+            .find(|l| l.product_id == bar.beer)
+            .unwrap();
+        assert_eq!(level.value().unwrap().minor(), 40_000);
+    }
+
+    #[test]
+    fn shelf_value_reports_overflow_instead_of_saturating() {
+        let level = Level {
+            product_id: 1,
+            code: "HUGE".into(),
+            name: "Impossible shelf".into(),
+            category: "Test".into(),
+            base_unit: "unit".into(),
+            on_hand: Milli::from_thousandths(i64::MAX),
+            threshold: Milli::ZERO,
+            tracks_inventory: true,
+            avg_cost: Money::from_minor(i64::MAX),
+        };
+
+        assert_eq!(level.value(), Err(crate::money::MoneyError::Overflow));
     }
 
     #[test]

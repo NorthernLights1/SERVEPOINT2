@@ -38,6 +38,9 @@ pub enum RepoError {
     #[error("sqlite: {0}")]
     Sqlite(#[from] SqlError),
 
+    #[error("settings: {0}")]
+    Settings(#[from] crate::settings::SettingsError),
+
     /// A rule said no, in words meant to be shown to whoever is standing at
     /// the till. Both the schema's triggers and this layer's own checks
     /// produce these.
@@ -137,9 +140,25 @@ pub(crate) mod fixture {
         // Two measures written as two lines, deliberately: §2.5 requires
         // expansion to sum rather than overwrite, and the fixture keeps a case
         // of it permanently in front of the tests.
-        recipe(&conn, gin_tonic, &[(gin, 1_000), (gin, 1_000), (tonic, 500)]);
+        recipe(
+            &conn,
+            gin_tonic,
+            &[(gin, 1_000), (gin, 1_000), (tonic, 500)],
+        );
 
-        Bar { conn, owner, cashier, sara, dawit, beer, beer_bottle, gin, gin_shot, gin_tonic, tonic }
+        Bar {
+            conn,
+            owner,
+            cashier,
+            sara,
+            dawit,
+            beer,
+            beer_bottle,
+            gin,
+            gin_shot,
+            gin_tonic,
+            tonic,
+        }
     }
 
     pub fn staff(conn: &Connection, code: &str, name: &str, role: &str) -> i64 {

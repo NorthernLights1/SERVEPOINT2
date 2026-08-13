@@ -18,17 +18,35 @@
 
 pub mod audit;
 pub mod auth;
+pub mod backup;
 pub mod bill;
+pub mod bills;
 pub mod calendar;
 pub mod commands;
+pub mod commissioning;
+pub mod correction;
+pub mod corrections;
 pub mod db;
+pub mod floor;
 pub mod ledger;
 pub mod money;
+pub mod overview;
+pub mod printing;
 pub mod quantity;
+pub mod reconcile;
+pub mod recovery;
+pub mod repo;
+pub mod resolution;
 pub mod settings;
 pub mod settings_form;
+pub mod settlement;
 pub mod state;
+pub mod trading;
+pub mod venue;
 
 pub use money::{BasisPoints, Money};
 pub use quantity::Milli;
 pub use settings::Settings;
+
+#[cfg(test)]
+mod invariant_tests;

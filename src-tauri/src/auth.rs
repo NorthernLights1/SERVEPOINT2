@@ -172,7 +172,9 @@ mod tests {
     fn a_hash_is_sixty_four_lowercase_hex_characters() {
         let hash = hash_pin("4071", SALT);
         assert_eq!(hash.len(), 64);
-        assert!(hash.chars().all(|c| c.is_ascii_hexdigit() && !c.is_uppercase()));
+        assert!(hash
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_uppercase()));
     }
 
     #[test]

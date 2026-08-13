@@ -165,7 +165,9 @@ pub fn verify(conn: &Connection) -> Result<ChainStatus> {
         if sequence_no != expected_seq {
             return Ok(ChainStatus::Broken {
                 sequence_no,
-                reason: audit::BreakReason::SequenceGap { expected: expected_seq },
+                reason: audit::BreakReason::SequenceGap {
+                    expected: expected_seq,
+                },
             });
         }
         if prev_hash != running {
@@ -223,7 +225,11 @@ pub fn open_shift_id(conn: &Connection) -> Result<Option<i64>> {
 /// system. Doing it this way keeps a random-number crate out of the dependency
 /// tree of a till that is otherwise entirely offline.
 pub fn random_hex(conn: &Connection, bytes: u32) -> Result<String> {
-    Ok(conn.query_row("SELECT LOWER(HEX(randomblob(?1)))", [bytes], |row| row.get(0))?)
+    Ok(
+        conn.query_row("SELECT LOWER(HEX(randomblob(?1)))", [bytes], |row| {
+            row.get(0)
+        })?,
+    )
 }
 
 #[cfg(test)]
@@ -245,9 +251,16 @@ mod tests {
     #[test]
     fn entries_chain_and_verify() {
         let conn = fresh();
-        append(&conn, &Event::new("SETTING_CHANGED", "settings", T0).changed("0", "1")).unwrap();
-        append(&conn, &Event::new("SETTING_CHANGED", "settings", T0 + 1).changed("1500", "1000"))
-            .unwrap();
+        append(
+            &conn,
+            &Event::new("SETTING_CHANGED", "settings", T0).changed("0", "1"),
+        )
+        .unwrap();
+        append(
+            &conn,
+            &Event::new("SETTING_CHANGED", "settings", T0 + 1).changed("1500", "1000"),
+        )
+        .unwrap();
         append(&conn, &Event::new("SHIFT_OPENED", "shift", T0 + 2).about(1)).unwrap();
         assert_eq!(verify(&conn).unwrap(), ChainStatus::Intact { rows: 3 });
     }
@@ -265,7 +278,11 @@ mod tests {
         let conn = fresh();
         append(&conn, &Event::new("SHIFT_OPENED", "shift", T0)).unwrap();
         let prev: String = conn
-            .query_row("SELECT prev_hash FROM audit_log WHERE sequence_no = 1", [], |r| r.get(0))
+            .query_row(
+                "SELECT prev_hash FROM audit_log WHERE sequence_no = 1",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(prev, GENESIS_HASH);
     }
@@ -281,9 +298,13 @@ mod tests {
         append(&conn, &Event::new("ORDER_VOIDED", "order", T0 + 1).about(7)).unwrap();
         append(&conn, &Event::new("SHIFT_CLOSED", "shift", T0 + 2).about(1)).unwrap();
 
-        conn.execute_batch("DROP TRIGGER audit_log_no_update").unwrap();
-        conn.execute("UPDATE audit_log SET action = 'ORDER_ISSUED' WHERE sequence_no = 2", [])
+        conn.execute_batch("DROP TRIGGER audit_log_no_update")
             .unwrap();
+        conn.execute(
+            "UPDATE audit_log SET action = 'ORDER_ISSUED' WHERE sequence_no = 2",
+            [],
+        )
+        .unwrap();
 
         assert_eq!(
             verify(&conn).unwrap(),
@@ -301,8 +322,10 @@ mod tests {
         append(&conn, &Event::new("B", "thing", T0 + 1)).unwrap();
         append(&conn, &Event::new("C", "thing", T0 + 2)).unwrap();
 
-        conn.execute_batch("DROP TRIGGER audit_log_no_delete").unwrap();
-        conn.execute("DELETE FROM audit_log WHERE sequence_no = 2", []).unwrap();
+        conn.execute_batch("DROP TRIGGER audit_log_no_delete")
+            .unwrap();
+        conn.execute("DELETE FROM audit_log WHERE sequence_no = 2", [])
+            .unwrap();
 
         assert_eq!(
             verify(&conn).unwrap(),
@@ -327,7 +350,10 @@ mod tests {
                 rusqlite::params![T0, "a".repeat(64)],
             )
             .unwrap_err();
-        assert!(err.to_string().contains("chain must be extended"), "got: {err}");
+        assert!(
+            err.to_string().contains("chain must be extended"),
+            "got: {err}"
+        );
     }
 
     #[test]
@@ -342,7 +368,9 @@ mod tests {
         let a = random_hex(&conn, 16).unwrap();
         let b = random_hex(&conn, 16).unwrap();
         assert_eq!(a.len(), 32);
-        assert!(a.chars().all(|c| c.is_ascii_hexdigit() && !c.is_uppercase()));
+        assert!(a
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_uppercase()));
         assert_ne!(a, b, "two salts in a row must not be identical");
     }
 }

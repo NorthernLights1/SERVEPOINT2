@@ -24,15 +24,71 @@ use rusqlite::Connection;
 /// Every migration, in the order they must be applied. Adding a file here is
 /// the only way it gets applied.
 pub const MIGRATIONS: &[(i64, &str, &str)] = &[
-    (1, "0001_core.sql", include_str!("../migrations/0001_core.sql")),
-    (2, "0002_catalogue.sql", include_str!("../migrations/0002_catalogue.sql")),
-    (3, "0003_shifts_tabs.sql", include_str!("../migrations/0003_shifts_tabs.sql")),
-    (4, "0004_orders.sql", include_str!("../migrations/0004_orders.sql")),
-    (5, "0005_receipts.sql", include_str!("../migrations/0005_receipts.sql")),
-    (6, "0006_purchasing.sql", include_str!("../migrations/0006_purchasing.sql")),
-    (7, "0007_inventory.sql", include_str!("../migrations/0007_inventory.sql")),
-    (8, "0008_money.sql", include_str!("../migrations/0008_money.sql")),
-    (9, "0009_audit.sql", include_str!("../migrations/0009_audit.sql")),
+    (
+        1,
+        "0001_core.sql",
+        include_str!("../migrations/0001_core.sql"),
+    ),
+    (
+        2,
+        "0002_catalogue.sql",
+        include_str!("../migrations/0002_catalogue.sql"),
+    ),
+    (
+        3,
+        "0003_shifts_tabs.sql",
+        include_str!("../migrations/0003_shifts_tabs.sql"),
+    ),
+    (
+        4,
+        "0004_orders.sql",
+        include_str!("../migrations/0004_orders.sql"),
+    ),
+    (
+        5,
+        "0005_receipts.sql",
+        include_str!("../migrations/0005_receipts.sql"),
+    ),
+    (
+        6,
+        "0006_purchasing.sql",
+        include_str!("../migrations/0006_purchasing.sql"),
+    ),
+    (
+        7,
+        "0007_inventory.sql",
+        include_str!("../migrations/0007_inventory.sql"),
+    ),
+    (
+        8,
+        "0008_money.sql",
+        include_str!("../migrations/0008_money.sql"),
+    ),
+    (
+        9,
+        "0009_audit.sql",
+        include_str!("../migrations/0009_audit.sql"),
+    ),
+    (
+        10,
+        "0010_repository_hardening.sql",
+        include_str!("../migrations/0010_repository_hardening.sql"),
+    ),
+    (
+        11,
+        "0011_backup_reconciliation_hardening.sql",
+        include_str!("../migrations/0011_backup_reconciliation_hardening.sql"),
+    ),
+    (
+        12,
+        "0012_generated_codes.sql",
+        include_str!("../migrations/0012_generated_codes.sql"),
+    ),
+    (
+        13,
+        "0013_items.sql",
+        include_str!("../migrations/0013_items.sql"),
+    ),
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -98,9 +154,11 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
     )? == 1;
 
     let applied: i64 = if bootstrapped {
-        conn.query_row("SELECT COALESCE(MAX(version), 0) FROM schema_migrations", [], |row| {
-            row.get(0)
-        })?
+        conn.query_row(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+            [],
+            |row| row.get(0),
+        )?
     } else {
         0
     };
@@ -109,7 +167,10 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
     if applied > known {
         // Refuse rather than "upgrade" downwards. An older build writing to a
         // newer schema is how data gets silently mangled.
-        return Err(DbError::FromTheFuture { found: applied, known });
+        return Err(DbError::FromTheFuture {
+            found: applied,
+            known,
+        });
     }
 
     let now = chrono::Utc::now().timestamp_millis();
@@ -138,19 +199,25 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
 
 /// The schema version currently applied.
 pub fn schema_version(conn: &Connection) -> Result<i64> {
-    Ok(conn.query_row("SELECT COALESCE(MAX(version), 0) FROM schema_migrations", [], |row| {
-        row.get(0)
-    })?)
+    Ok(conn.query_row(
+        "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+        [],
+        |row| row.get(0),
+    )?)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Derived rather than written out, so adding a migration does not mean
+    /// hunting down five assertions that hardcoded the previous number.
+    const LATEST: i64 = MIGRATIONS[MIGRATIONS.len() - 1].0;
+
     #[test]
     fn a_fresh_database_gets_the_whole_schema() {
         let conn = open_in_memory().expect("migrations should apply cleanly");
-        assert_eq!(schema_version(&conn).unwrap(), 9);
+        assert_eq!(schema_version(&conn).unwrap(), LATEST);
     }
 
     #[test]
@@ -160,9 +227,166 @@ mod tests {
         let conn = open_in_memory().unwrap();
         run_migrations(&conn).expect("a second run must be a no-op");
         let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
             .unwrap();
-        assert_eq!(count, 9);
+        assert_eq!(count, MIGRATIONS.len() as i64);
+    }
+
+    #[test]
+    fn a_version_nine_database_upgrades_in_place_without_rewriting_venue_data() {
+        let conn = Connection::open_in_memory().unwrap();
+        configure(&conn).unwrap();
+        for (version, name, sql) in &MIGRATIONS[..9] {
+            conn.execute_batch("BEGIN").unwrap();
+            conn.execute_batch(sql).unwrap();
+            conn.execute(
+                "INSERT INTO schema_migrations (version, name, applied_at)
+                 VALUES (?1, ?2, 0)",
+                rusqlite::params![version, name],
+            )
+            .unwrap();
+            conn.execute_batch("COMMIT").unwrap();
+        }
+        conn.execute(
+            "UPDATE settings SET value = 'Upgrade Test Venue'
+              WHERE key = 'receipt.business_name'",
+            [],
+        )
+        .unwrap();
+
+        run_migrations(&conn).unwrap();
+
+        assert_eq!(schema_version(&conn).unwrap(), LATEST);
+        let venue: String = conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'receipt.business_name'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(venue, "Upgrade Test Venue");
+        let has_customer_tin = conn
+            .prepare("PRAGMA table_info(receipts)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+            .iter()
+            .any(|column| column == "customer_tin");
+        assert!(has_customer_tin);
+    }
+
+    /// The renumber has to survive a venue that already typed its own codes,
+    /// including one that happens to look like a generated one — `code` is
+    /// UNIQUE, so a single-pass rewrite could collide with a row it had not
+    /// reached yet.
+    #[test]
+    fn a_version_eleven_database_has_its_hand_typed_codes_renumbered() {
+        let conn = Connection::open_in_memory().unwrap();
+        configure(&conn).unwrap();
+        for (version, name, sql) in &MIGRATIONS[..11] {
+            conn.execute_batch("BEGIN").unwrap();
+            conn.execute_batch(sql).unwrap();
+            conn.execute(
+                "INSERT INTO schema_migrations (version, name, applied_at)
+                 VALUES (?1, ?2, 0)",
+                rusqlite::params![version, name],
+            )
+            .unwrap();
+            conn.execute_batch("COMMIT").unwrap();
+        }
+        // The second product already holds the code the first one is about to
+        // be given.
+        conn.execute_batch(
+            "INSERT INTO products (code, name, category, base_unit, base_units_per_pack,
+                                   units_per_purchase_pack, low_stock_threshold_milli,
+                                   tracks_inventory, destination, created_at)
+             VALUES ('W-001', 'Johnnie Walker', 'Whiskey', 'BOTTLE', 1000, 24, 3000, 1, 'BAR', 1),
+                    ('PRD-000001', 'Gin', 'Spirits', 'BOTTLE', 1000, 12, 3000, 1, 'BAR', 2);
+             INSERT INTO staff (code, full_name, role, pin_hash, pin_salt, created_at)
+             VALUES ('OWNER-1', 'Selam', 'OWNER', 'hash', 'salt', 1);",
+        )
+        .unwrap();
+
+        run_migrations(&conn).unwrap();
+
+        let codes: Vec<String> = conn
+            .prepare("SELECT code FROM products ORDER BY id")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(codes, ["PRD-000001", "PRD-000002"]);
+        let owner: String = conn
+            .query_row("SELECT code FROM staff", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(owner, "STF-000001");
+
+        // The counters continue past what was just assigned rather than
+        // handing a live row's code to the next one added.
+        let next: Vec<(String, i64)> = conn
+            .prepare("SELECT name, next_value FROM sequences WHERE name IN ('PRODUCT','STAFF') ORDER BY name")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(next, [("PRODUCT".to_owned(), 3), ("STAFF".to_owned(), 2)]);
+    }
+
+    #[test]
+    fn a_version_ten_database_keeps_backup_history_while_accepting_honest_failures() {
+        let conn = Connection::open_in_memory().unwrap();
+        configure(&conn).unwrap();
+        for (version, name, sql) in &MIGRATIONS[..10] {
+            conn.execute_batch("BEGIN").unwrap();
+            conn.execute_batch(sql).unwrap();
+            conn.execute(
+                "INSERT INTO schema_migrations (version, name, applied_at)
+                 VALUES (?1, ?2, 0)",
+                rusqlite::params![version, name],
+            )
+            .unwrap();
+            conn.execute_batch("COMMIT").unwrap();
+        }
+        conn.execute(
+            "INSERT INTO backups
+                 (target_path, size_bytes, outcome, detail, created_at)
+             VALUES ('/media/usb/old.db', 4096, 'VERIFIED', '', 1)",
+            [],
+        )
+        .unwrap();
+
+        run_migrations(&conn).unwrap();
+
+        assert_eq!(schema_version(&conn).unwrap(), LATEST);
+        let old: (String, i64, String) = conn
+            .query_row(
+                "SELECT target_path, size_bytes, outcome FROM backups WHERE created_at = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(old, ("/media/usb/old.db".into(), 4096, "VERIFIED".into()));
+        conn.execute(
+            "INSERT INTO backups
+                 (target_path, size_bytes, outcome, detail, created_at)
+             VALUES ('/media/usb/missing.db', 0, 'FAILED', 'not mounted', 2)",
+            [],
+        )
+        .unwrap();
+        assert!(conn
+            .execute(
+                "INSERT INTO backups
+                     (target_path, size_bytes, outcome, detail, created_at)
+                 VALUES ('/media/usb/empty.db', 0, 'VERIFIED', '', 3)",
+                [],
+            )
+            .is_err());
     }
 
     #[test]
@@ -170,7 +394,9 @@ mod tests {
         // They default to OFF and silently do nothing if forgotten, which
         // would turn every REFERENCES clause in the schema into a comment.
         let conn = open_in_memory().unwrap();
-        let on: i64 = conn.query_row("PRAGMA foreign_keys", [], |row| row.get(0)).unwrap();
+        let on: i64 = conn
+            .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(on, 1);
     }
 
@@ -181,9 +407,11 @@ mod tests {
         // else's name and TIN onto a fiscal document.
         let conn = open_in_memory().unwrap();
         let name: String = conn
-            .query_row("SELECT value FROM settings WHERE key = 'receipt.business_name'", [], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'receipt.business_name'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(name, "");
     }
@@ -194,9 +422,11 @@ mod tests {
         // deliberately no key to turn that off.
         let conn = open_in_memory().unwrap();
         let strays: i64 = conn
-            .query_row("SELECT COUNT(*) FROM settings WHERE key LIKE 'inventory.%'", [], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT COUNT(*) FROM settings WHERE key LIKE 'inventory.%'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(strays, 0);
     }
@@ -222,7 +452,7 @@ mod tests {
         .unwrap();
         match run_migrations(&conn) {
             Err(DbError::FromTheFuture { found, known }) => {
-                assert_eq!((found, known), (99, 9));
+                assert_eq!((found, known), (99, LATEST));
             }
             other => panic!("expected a refusal, got {other:?}"),
         }

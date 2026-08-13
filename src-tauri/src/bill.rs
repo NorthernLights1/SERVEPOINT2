@@ -91,7 +91,12 @@ impl Bill {
         let (net, service_charge, tax, total) = if !config.tax_enabled {
             // No tax at all. The service charge is simply added.
             let service = line_total.percentage_of(service_rate)?;
-            (line_total, service, Money::ZERO, line_total.checked_add(service)?)
+            (
+                line_total,
+                service,
+                Money::ZERO,
+                line_total.checked_add(service)?,
+            )
         } else if !config.tax_inclusive {
             // Menu prices exclude tax. Service is charged on the lines, then
             // tax on the two together — because service is taxable.
@@ -205,7 +210,10 @@ mod tests {
     fn inclusive_with_no_service_returns_the_menu_price_exactly() {
         // The bug that made a 1000.00 menu price bill 1000.01: with no service
         // charge, an inclusive bill MUST come back to the menu total.
-        let config = ChargeConfig { service_enabled: false, ..VAT_15_INCLUSIVE };
+        let config = ChargeConfig {
+            service_enabled: false,
+            ..VAT_15_INCLUSIVE
+        };
         for line_minor in [100_000i64, 262_000, 1, 99, 12_345] {
             let bill = Bill::calculate(m(line_minor), &config).unwrap();
             assert_eq!(
@@ -220,7 +228,12 @@ mod tests {
     #[test]
     fn every_bill_adds_up_to_its_own_total() {
         // The arithmetic a suspicious owner does by hand on the printed slip.
-        let configs = [ChargeConfig::NONE, SERVICE_ONLY, VAT_15_EXCLUSIVE, VAT_15_INCLUSIVE];
+        let configs = [
+            ChargeConfig::NONE,
+            SERVICE_ONLY,
+            VAT_15_EXCLUSIVE,
+            VAT_15_INCLUSIVE,
+        ];
         for config in configs {
             for line_minor in 0..1_500i64 {
                 let bill = Bill::calculate(m(line_minor), &config).unwrap();
@@ -240,7 +253,12 @@ mod tests {
 
     #[test]
     fn a_zero_bill_stays_zero_in_every_mode() {
-        for config in [ChargeConfig::NONE, SERVICE_ONLY, VAT_15_EXCLUSIVE, VAT_15_INCLUSIVE] {
+        for config in [
+            ChargeConfig::NONE,
+            SERVICE_ONLY,
+            VAT_15_EXCLUSIVE,
+            VAT_15_INCLUSIVE,
+        ] {
             let bill = Bill::calculate(Money::ZERO, &config).unwrap();
             assert_eq!(bill.total, Money::ZERO);
         }
@@ -250,7 +268,10 @@ mod tests {
     fn disabled_charges_report_a_zero_rate_not_the_configured_one() {
         // The rate is snapshotted onto the transaction. Storing 15% on a bill
         // that was never taxed would make the receipt unexplainable.
-        let config = ChargeConfig { tax_enabled: false, ..VAT_15_INCLUSIVE };
+        let config = ChargeConfig {
+            tax_enabled: false,
+            ..VAT_15_INCLUSIVE
+        };
         let bill = Bill::calculate(m(100_000), &config).unwrap();
         assert_eq!(bill.tax_rate, BasisPoints::ZERO);
         assert_eq!(bill.service_rate, BasisPoints(1000));

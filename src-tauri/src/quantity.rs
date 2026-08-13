@@ -44,16 +44,25 @@ impl Milli {
     }
 
     pub fn checked_add(self, other: Self) -> Result<Self> {
-        self.0.checked_add(other.0).map(Self).ok_or(MoneyError::Overflow)
+        self.0
+            .checked_add(other.0)
+            .map(Self)
+            .ok_or(MoneyError::Overflow)
     }
 
     pub fn checked_sub(self, other: Self) -> Result<Self> {
-        self.0.checked_sub(other.0).map(Self).ok_or(MoneyError::Overflow)
+        self.0
+            .checked_sub(other.0)
+            .map(Self)
+            .ok_or(MoneyError::Overflow)
     }
 
     /// Scale by a whole count — a recipe line times the number ordered.
     pub fn checked_mul(self, factor: i64) -> Result<Self> {
-        self.0.checked_mul(factor).map(Self).ok_or(MoneyError::Overflow)
+        self.0
+            .checked_mul(factor)
+            .map(Self)
+            .ok_or(MoneyError::Overflow)
     }
 
     pub fn abs(self) -> Self {
@@ -101,7 +110,8 @@ impl fmt::Display for Milli {
 impl std::iter::Sum for Milli {
     fn sum<I: Iterator<Item = Milli>>(iter: I) -> Self {
         iter.fold(Milli::ZERO, |acc, q| {
-            acc.checked_add(q).expect("quantity total overflowed 64 bits")
+            acc.checked_add(q)
+                .expect("quantity total overflowed 64 bits")
         })
     }
 }

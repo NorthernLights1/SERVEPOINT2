@@ -24,6 +24,7 @@ use crate::calendar;
 use crate::db;
 use crate::ledger::{self, Event};
 use crate::money::Money;
+use crate::repo::seq;
 use crate::settings::{self, keys, Settings};
 use crate::settings_form::{self, SettingGroup};
 use crate::state::{AppState, Session};
@@ -39,11 +40,14 @@ pub struct CommandError {
 }
 
 impl CommandError {
-    fn of(kind: &'static str, message: impl Into<String>) -> Self {
-        Self { kind, message: message.into() }
+    pub(crate) fn of(kind: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+        }
     }
 
-    fn signed_out() -> Self {
+    pub(crate) fn signed_out() -> Self {
         Self::of("SIGNED_OUT", "Sign in first.")
     }
 
@@ -51,7 +55,7 @@ impl CommandError {
         Self::of("NOT_PERMITTED", "Only the owner can change settings.")
     }
 
-    fn refused(message: impl Into<String>) -> Self {
+    pub(crate) fn refused(message: impl Into<String>) -> Self {
         Self::of("REFUSED", message)
     }
 }
@@ -71,6 +75,61 @@ impl From<settings::SettingsError> for CommandError {
 impl From<ledger::LedgerError> for CommandError {
     fn from(error: ledger::LedgerError) -> Self {
         Self::of("DATABASE", error.to_string())
+    }
+}
+
+impl From<crate::commissioning::CommissioningError> for CommandError {
+    fn from(error: crate::commissioning::CommissioningError) -> Self {
+        match error {
+            crate::commissioning::CommissioningError::Sqlite(inner) => Self::from(inner),
+            other => Self::of("REFUSED", other.to_string()),
+        }
+    }
+}
+
+impl From<crate::settlement::SettlementError> for CommandError {
+    fn from(error: crate::settlement::SettlementError) -> Self {
+        match error {
+            crate::settlement::SettlementError::Sqlite(inner) => Self::from(inner),
+            other => Self::of("REFUSED", other.to_string()),
+        }
+    }
+}
+
+impl From<crate::repo::RepoError> for CommandError {
+    /// A repository refusal is already a sentence meant for the person at the
+    /// till, so it is passed through rather than rewritten.
+    fn from(error: crate::repo::RepoError) -> Self {
+        match error {
+            crate::repo::RepoError::Sqlite(inner) => Self::from(inner),
+            other => Self::of("REFUSED", other.to_string()),
+        }
+    }
+}
+
+impl From<crate::trading::TradingError> for CommandError {
+    fn from(error: crate::trading::TradingError) -> Self {
+        match error {
+            // Paper may already authorise a pour while the database did not
+            // commit. The frontend must route this to recovery, never retry it.
+            pending @ crate::trading::TradingError::IssuePrintPending { .. } => {
+                Self::of("PRINT_PENDING", pending.to_string())
+            }
+            other => Self::of("REFUSED", other.to_string()),
+        }
+    }
+}
+
+impl From<crate::correction::CorrectionError> for CommandError {
+    fn from(error: crate::correction::CorrectionError) -> Self {
+        match error {
+            pending @ crate::correction::CorrectionError::PrintPending { .. } => {
+                Self::of("PRINT_PENDING", pending.to_string())
+            }
+            crate::correction::CorrectionError::Sqlite(inner) => Self::from(inner),
+            crate::correction::CorrectionError::Repo(inner) => Self::from(inner),
+            other => Self::of("DATABASE", other.to_string()),
+        }
     }
 }
 
@@ -228,19 +287,25 @@ fn accounts_of(conn: &Connection) -> Result<Vec<AccountView>> {
           ORDER BY CASE role WHEN 'OWNER' THEN 0 ELSE 1 END, full_name",
     )?;
     let rows = statement.query_map([], |row| {
-        Ok(AccountView { staff_id: row.get(0)?, name: row.get(1)?, role: row.get(2)? })
+        Ok(AccountView {
+            staff_id: row.get(0)?,
+            name: row.get(1)?,
+            role: row.get(2)?,
+        })
     })?;
     Ok(rows.collect::<std::result::Result<_, _>>()?)
 }
 
-fn open_shift_of(conn: &Connection, now: i64) -> Result<Option<ShiftView>> {
+pub(crate) fn open_shift_of(conn: &Connection, now: i64) -> Result<Option<ShiftView>> {
     let mut statement = conn.prepare(
         "SELECT s.id, s.code, s.business_date, s.expected_end_at, st.full_name
            FROM shifts s JOIN staff st ON st.id = s.opened_by
           WHERE s.status = 'OPEN' LIMIT 1",
     )?;
     let mut rows = statement.query([])?;
-    let Some(row) = rows.next()? else { return Ok(None) };
+    let Some(row) = rows.next()? else {
+        return Ok(None);
+    };
 
     let business_date: String = row.get(2)?;
     let expected_end_at: i64 = row.get(3)?;
@@ -314,7 +379,10 @@ fn audit_of(conn: &Connection) -> Result<AuditView> {
                  altered or removed since it was written."
             ),
         },
-        ChainStatus::Broken { sequence_no, reason } => AuditView {
+        ChainStatus::Broken {
+            sequence_no,
+            reason,
+        } => AuditView {
             intact: false,
             entries: 0,
             headline: "The record has been altered".into(),
@@ -349,11 +417,11 @@ pub fn verify_audit(state: &AppState) -> Result<AuditView> {
 // Signing in
 // ---------------------------------------------------------------------------
 
-fn require_session(state: &AppState) -> Result<Session> {
+pub(crate) fn require_session(state: &AppState) -> Result<Session> {
     state.session().ok_or_else(CommandError::signed_out)
 }
 
-fn require_owner(state: &AppState) -> Result<Session> {
+pub(crate) fn require_owner(state: &AppState) -> Result<Session> {
     let session = require_session(state)?;
     if !session.is_owner() {
         return Err(CommandError::owner_only());
@@ -385,7 +453,15 @@ pub fn sign_in(state: &AppState, staff_id: i64, pin: &str) -> Result<Session> {
                FROM staff
               WHERE id = ?1 AND active = 1 AND role IN ('OWNER','CASHIER')",
             [staff_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
         )
         .map(Some)
         .or_else(|error| match error {
@@ -409,13 +485,18 @@ pub fn sign_in(state: &AppState, staff_id: i64, pin: &str) -> Result<Session> {
         state.with_db_mut(|conn| -> Result<()> {
             let transaction = conn.transaction()?;
             let shift = ledger::open_shift_id(&transaction)?;
-            let event = Event::new("SIGN_IN_REFUSED", "staff", now).about(staff_id).during(shift);
+            let event = Event::new("SIGN_IN_REFUSED", "staff", now)
+                .about(staff_id)
+                .during(shift);
             ledger::append(&transaction, &event)?;
             transaction.commit()?;
             Ok(())
         })?;
         let message = if penalty > 0 {
-            format!("That PIN is not right. Try again in {} seconds.", whole_seconds(penalty))
+            format!(
+                "That PIN is not right. Try again in {} seconds.",
+                whole_seconds(penalty)
+            )
         } else {
             "That PIN is not right.".to_owned()
         };
@@ -423,7 +504,12 @@ pub fn sign_in(state: &AppState, staff_id: i64, pin: &str) -> Result<Session> {
     }
 
     let (code, name, role, _, _) = found.expect("a verified PIN implies the account was found");
-    let session = Session { staff_id, code, name, role };
+    let session = Session {
+        staff_id,
+        code,
+        name,
+        role,
+    };
 
     state.with_throttle(crate::state::Throttle::record_success);
     state.with_db_mut(|conn| -> Result<()> {
@@ -509,7 +595,9 @@ pub fn complete_setup(state: &AppState, request: &SetupRequest) -> Result<Sessio
     let now = now_ms();
 
     if request.owner_name.trim().is_empty() || request.cashier_name.trim().is_empty() {
-        return Err(CommandError::refused("Both the owner and the cashier need a name."));
+        return Err(CommandError::refused(
+            "Both the owner and the cashier need a name.",
+        ));
     }
     auth::validate_pin(&request.owner_pin)
         .map_err(|error| CommandError::refused(format!("Owner PIN: {error}")))?;
@@ -530,7 +618,6 @@ pub fn complete_setup(state: &AppState, request: &SetupRequest) -> Result<Sessio
 
         let owner_id = create_staff(
             &transaction,
-            "OWNER-1",
             request.owner_name.trim(),
             "OWNER",
             &request.owner_pin,
@@ -538,7 +625,6 @@ pub fn complete_setup(state: &AppState, request: &SetupRequest) -> Result<Sessio
         )?;
         create_staff(
             &transaction,
-            "CASHIER-1",
             request.cashier_name.trim(),
             "CASHIER",
             &request.cashier_pin,
@@ -546,9 +632,21 @@ pub fn complete_setup(state: &AppState, request: &SetupRequest) -> Result<Sessio
         )?;
 
         for change in &request.changes {
-            settings::put(&transaction, &change.key, &change.value, Some(owner_id), now)?;
+            settings::put(
+                &transaction,
+                &change.key,
+                &change.value,
+                Some(owner_id),
+                now,
+            )?;
         }
-        settings::put(&transaction, keys::SETUP_COMPLETED, "1", Some(owner_id), now)?;
+        settings::put(
+            &transaction,
+            keys::SETUP_COMPLETED,
+            "1",
+            Some(owner_id),
+            now,
+        )?;
 
         // One line, at sequence 1, saying who this till belongs to and who set
         // it up. Everything after it chains from here.
@@ -576,14 +674,8 @@ pub fn complete_setup(state: &AppState, request: &SetupRequest) -> Result<Sessio
     Ok(session)
 }
 
-fn create_staff(
-    conn: &Connection,
-    code: &str,
-    name: &str,
-    role: &str,
-    pin: &str,
-    now: i64,
-) -> Result<i64> {
+fn create_staff(conn: &Connection, name: &str, role: &str, pin: &str, now: i64) -> Result<i64> {
+    let (_, code) = seq::next(conn, seq::Counter::Staff)?;
     let salt = ledger::random_hex(conn, 16)?;
     let hash = auth::hash_pin(pin, &salt);
     conn.execute(
@@ -670,8 +762,14 @@ mod tests {
             cashier_name: "Dawit".into(),
             cashier_pin: "9382".into(),
             changes: vec![
-                SettingChange { key: keys::BUSINESS_NAME.into(), value: "The Blue Room".into() },
-                SettingChange { key: keys::CURRENCY_CODE.into(), value: "ETB".into() },
+                SettingChange {
+                    key: keys::BUSINESS_NAME.into(),
+                    value: "The Blue Room".into(),
+                },
+                SettingChange {
+                    key: keys::CURRENCY_CODE.into(),
+                    value: "ETB".into(),
+                },
             ],
         }
     }
@@ -691,7 +789,10 @@ mod tests {
         assert!(view.accounts.is_empty());
         assert!(view.session.is_none());
         assert!(view.open_shift.is_none());
-        assert_eq!(view.schema_version, 9);
+        assert_eq!(
+            view.schema_version,
+            db::MIGRATIONS[db::MIGRATIONS.len() - 1].0
+        );
     }
 
     #[test]
@@ -721,11 +822,23 @@ mod tests {
     #[test]
     fn setup_refuses_a_guessable_or_shared_pin() {
         let state = blank();
-        let weak = SetupRequest { owner_pin: "1234".into(), ..setup_request() };
-        assert!(complete_setup(&state, &weak).unwrap_err().message.contains("Owner PIN"));
+        let weak = SetupRequest {
+            owner_pin: "1234".into(),
+            ..setup_request()
+        };
+        assert!(complete_setup(&state, &weak)
+            .unwrap_err()
+            .message
+            .contains("Owner PIN"));
 
-        let shared = SetupRequest { cashier_pin: "4071".into(), ..setup_request() };
-        assert!(complete_setup(&state, &shared).unwrap_err().message.contains("different PINs"));
+        let shared = SetupRequest {
+            cashier_pin: "4071".into(),
+            ..setup_request()
+        };
+        assert!(complete_setup(&state, &shared)
+            .unwrap_err()
+            .message
+            .contains("different PINs"));
 
         // ...and none of the failed attempts left half a venue behind.
         let view = bootstrap(&state).unwrap();
@@ -793,8 +906,14 @@ mod tests {
         sign_in(&state, cashier.staff_id, "9382").unwrap();
 
         assert_eq!(read_settings(&state).unwrap_err().kind, "NOT_PERMITTED");
-        let change = [SettingChange { key: keys::TAX_ENABLED.into(), value: "1".into() }];
-        assert_eq!(write_settings(&state, &change).unwrap_err().kind, "NOT_PERMITTED");
+        let change = [SettingChange {
+            key: keys::TAX_ENABLED.into(),
+            value: "1".into(),
+        }];
+        assert_eq!(
+            write_settings(&state, &change).unwrap_err().kind,
+            "NOT_PERMITTED"
+        );
     }
 
     #[test]
@@ -813,7 +932,10 @@ mod tests {
 
         let after = write_settings(
             &state,
-            &[SettingChange { key: keys::TAX_ENABLED.into(), value: "1".into() }],
+            &[SettingChange {
+                key: keys::TAX_ENABLED.into(),
+                value: "1".into(),
+            }],
         )
         .unwrap();
         assert!(after.preview.show_tax);
@@ -832,8 +954,14 @@ mod tests {
         let err = write_settings(
             &state,
             &[
-                SettingChange { key: keys::TAX_ENABLED.into(), value: "1".into() },
-                SettingChange { key: keys::TAX_RATE_BP.into(), value: "50000".into() },
+                SettingChange {
+                    key: keys::TAX_ENABLED.into(),
+                    value: "1".into(),
+                },
+                SettingChange {
+                    key: keys::TAX_RATE_BP.into(),
+                    value: "50000".into(),
+                },
             ],
         )
         .unwrap_err();
@@ -846,7 +974,10 @@ mod tests {
             .flat_map(|g| &g.fields)
             .find(|f| f.key == keys::TAX_ENABLED)
             .unwrap();
-        assert_eq!(tax_on.value, "0", "the first change rolled back with the second");
+        assert_eq!(
+            tax_on.value, "0",
+            "the first change rolled back with the second"
+        );
     }
 
     #[test]
@@ -854,13 +985,19 @@ mod tests {
         let state = ready();
         write_settings(
             &state,
-            &[SettingChange { key: keys::SERVICE_RATE_BP.into(), value: "1250".into() }],
+            &[SettingChange {
+                key: keys::SERVICE_RATE_BP.into(),
+                value: "1250".into(),
+            }],
         )
         .unwrap();
 
         let audit = verify_audit(&state).unwrap();
         assert!(audit.intact, "{}", audit.detail);
-        assert!(audit.entries >= 2, "setup and the change are both on the record");
+        assert!(
+            audit.entries >= 2,
+            "setup and the change are both on the record"
+        );
 
         let logged: i64 = state.with_db(|conn| {
             conn.query_row(
@@ -879,8 +1016,14 @@ mod tests {
     fn saving_an_unchanged_value_does_not_pad_the_record() {
         let state = ready();
         let before = verify_audit(&state).unwrap().entries;
-        write_settings(&state, &[SettingChange { key: keys::TAX_ENABLED.into(), value: "0".into() }])
-            .unwrap();
+        write_settings(
+            &state,
+            &[SettingChange {
+                key: keys::TAX_ENABLED.into(),
+                value: "0".into(),
+            }],
+        )
+        .unwrap();
         assert_eq!(verify_audit(&state).unwrap().entries, before);
     }
 
@@ -908,7 +1051,10 @@ mod tests {
         let state = ready();
         let view = write_settings(
             &state,
-            &[SettingChange { key: keys::SERVICE_ENABLED.into(), value: "0".into() }],
+            &[SettingChange {
+                key: keys::SERVICE_ENABLED.into(),
+                value: "0".into(),
+            }],
         )
         .unwrap();
         assert!(!view.preview.show_service);

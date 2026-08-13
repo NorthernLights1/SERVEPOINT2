@@ -24,6 +24,29 @@ type Optional<T> = T | undefined;
 
 /* -------------------------------------------------------------------------- */
 
+export function PageHead({
+  eyebrow,
+  title,
+  blurb,
+  aside,
+}: {
+  eyebrow: string;
+  title: string;
+  blurb: string;
+  aside?: ReactNode;
+}) {
+  return (
+    <div className="pagehead">
+      <div className="pagehead__text">
+        <span className="eyebrow">{eyebrow}</span>
+        <h1>{title}</h1>
+        <p className="muted">{blurb}</p>
+      </div>
+      {aside}
+    </div>
+  );
+}
+
 export function Card({
   title,
   blurb,
@@ -50,24 +73,6 @@ export function Card({
       )}
       <div className={flush ? "card__body card__body--flush" : "card__body"}>{children}</div>
     </section>
-  );
-}
-
-export function Stat({
-  label,
-  value,
-  note,
-}: {
-  label: string;
-  value: string;
-  note?: Optional<string>;
-}) {
-  return (
-    <div className="stat">
-      <span className="eyebrow">{label}</span>
-      <span className="stat__value num">{value}</span>
-      {note && <span className="stat__note">{note}</span>}
-    </div>
   );
 }
 

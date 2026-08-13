@@ -116,14 +116,20 @@ impl AppState {
     /// poisoned it has already been reported, and refusing every subsequent
     /// operation would turn one bad command into a dead application.
     pub fn with_db<T>(&self, work: impl FnOnce(&Connection) -> T) -> T {
-        let guard = self.db.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let guard = self
+            .db
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         work(&guard)
     }
 
     /// Run something against the database with `&mut`, for work that needs a
     /// transaction.
     pub fn with_db_mut<T>(&self, work: impl FnOnce(&mut Connection) -> T) -> T {
-        let mut guard = self.db.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut guard = self
+            .db
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         work(&mut guard)
     }
 
@@ -135,11 +141,17 @@ impl AppState {
     }
 
     pub fn set_session(&self, session: Option<Session>) {
-        *self.session.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = session;
+        *self
+            .session
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = session;
     }
 
     pub fn with_throttle<T>(&self, work: impl FnOnce(&mut Throttle) -> T) -> T {
-        let mut guard = self.throttle.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut guard = self
+            .throttle
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         work(&mut guard)
     }
 }
@@ -215,7 +227,10 @@ mod tests {
             name: "Selam".into(),
             role: "OWNER".into(),
         };
-        let cashier = Session { role: "CASHIER".into(), ..owner.clone() };
+        let cashier = Session {
+            role: "CASHIER".into(),
+            ..owner.clone()
+        };
         assert!(owner.is_owner());
         assert!(!cashier.is_owner());
     }

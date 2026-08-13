@@ -14,10 +14,19 @@ import { useCallback, useEffect, useState } from "react";
 import { api, inDesktopApp, type BootstrapView, type ServePointError, type Session } from "./api";
 import { Banner, Loading } from "./ui";
 import { SignIn, Setup } from "./screens/Gate";
+import { Catalogue } from "./screens/Catalogue";
 import { Settings } from "./screens/Settings";
-import { EndOfDay, Inventory, Overview, Reports, Till } from "./screens/Floor";
+import { EndOfDay } from "./screens/EndOfDay";
+import { Inventory, Overview, Reports, Till } from "./screens/Floor";
 
-type Route = "overview" | "till" | "inventory" | "endofday" | "reports" | "settings";
+type Route =
+  | "overview"
+  | "till"
+  | "inventory"
+  | "endofday"
+  | "reports"
+  | "catalogue"
+  | "settings";
 
 interface NavEntry {
   route: Route;
@@ -35,6 +44,7 @@ const OWNER_NAV: NavEntry[] = [
   { route: "overview", label: "Overview", glyph: "◑" },
   { route: "reports", label: "Reports", glyph: "▥" },
   { route: "inventory", label: "Inventory", glyph: "▦" },
+  { route: "catalogue", label: "Catalogue", glyph: "◈" },
   { route: "settings", label: "Settings", glyph: "⚙" },
 ];
 
@@ -193,10 +203,11 @@ export default function App() {
         </header>
 
         {current === "overview" && <Overview boot={boot} />}
-        {current === "till" && <Till boot={boot} />}
+        {current === "till" && <Till />}
         {current === "inventory" && <Inventory />}
-        {current === "endofday" && <EndOfDay boot={boot} />}
+        {current === "endofday" && <EndOfDay />}
         {current === "reports" && <Reports />}
+        {current === "catalogue" && <Catalogue />}
         {current === "settings" && <Settings />}
       </div>
     </div>

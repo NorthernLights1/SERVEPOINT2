@@ -11,7 +11,9 @@
 
 use tauri::Manager;
 
-use servepoint_lib::{commands, db, state::AppState};
+use servepoint_lib::{
+    bills, commands, corrections, db, floor, overview, reconcile, recovery, state::AppState, venue,
+};
 
 /// The database file inside the app's data directory.
 const DB_FILE: &str = "servepoint.db";
@@ -50,6 +52,36 @@ fn main() {
             commands::cmd_read_settings,
             commands::cmd_write_settings,
             commands::cmd_verify_audit,
+            floor::cmd_floor_view,
+            floor::cmd_inventory_view,
+            floor::cmd_open_shift,
+            floor::cmd_open_tab,
+            floor::cmd_place_order,
+            corrections::cmd_correction_order,
+            corrections::cmd_preview_correction,
+            corrections::cmd_correct_order,
+            corrections::cmd_void_order,
+            venue::cmd_setup_view,
+            venue::cmd_add_staff,
+            venue::cmd_set_staff_active,
+            venue::cmd_add_product,
+            venue::cmd_sell_product,
+            venue::cmd_edit_product,
+            venue::cmd_add_sale_item,
+            venue::cmd_edit_sale_item,
+            venue::cmd_set_recipe,
+            venue::cmd_set_price,
+            venue::cmd_add_opening_stock,
+            bills::cmd_tab_bill,
+            bills::cmd_settle_tab,
+            reconcile::cmd_reconciliation_view,
+            reconcile::cmd_settle_waiter,
+            reconcile::cmd_begin_closing,
+            reconcile::cmd_close_night,
+            overview::cmd_overview_view,
+            recovery::cmd_recovery_view,
+            recovery::cmd_resolve_handwritten,
+            recovery::cmd_resolve_non_print,
         ])
         .run(tauri::generate_context!())
         .expect("ServePoint could not start");

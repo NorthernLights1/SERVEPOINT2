@@ -69,7 +69,11 @@ pub enum SettingsError {
     UnknownKey(String),
 
     #[error("{key} cannot be '{value}': {why}")]
-    Invalid { key: String, value: String, why: String },
+    Invalid {
+        key: String,
+        value: String,
+        why: String,
+    },
 
     #[error("the trading hours are not readable: {0}")]
     BadCalendar(#[from] CalendarError),
@@ -286,7 +290,10 @@ fn check_value(key: &str, value: &str, kind: &str) -> Result<()> {
         }
     }
     if key == keys::TABS_REFERENCE_MODE
-        && !matches!(value, "TABLE" | "CUSTOMER_NAME" | "CUSTOMER_PHONE" | "CUSTOM")
+        && !matches!(
+            value,
+            "TABLE" | "CUSTOMER_NAME" | "CUSTOMER_PHONE" | "CUSTOM"
+        )
     {
         return refuse("expected TABLE, CUSTOMER_NAME, CUSTOMER_PHONE or CUSTOM");
     }
@@ -324,7 +331,9 @@ pub fn put(
     check_value(key, value, kind)?;
 
     let previous: String = conn
-        .query_row("SELECT value FROM settings WHERE key = ?1", [key], |row| row.get(0))
+        .query_row("SELECT value FROM settings WHERE key = ?1", [key], |row| {
+            row.get(0)
+        })
         .map_err(|error| match error {
             rusqlite::Error::QueryReturnedNoRows => SettingsError::UnknownKey(key.to_owned()),
             other => SettingsError::Sqlite(other),
@@ -386,16 +395,28 @@ mod tests {
         let conn = fresh();
         put(&conn, keys::CURRENCY_CODE, "ETB", None, 0).unwrap();
         let settings = Settings::load(&conn).unwrap();
-        assert_eq!(settings.format_money(Money::from_minor(288_200)), "2,882.00 ETB");
+        assert_eq!(
+            settings.format_money(Money::from_minor(288_200)),
+            "2,882.00 ETB"
+        );
         assert_eq!(settings.format_money(Money::from_minor(5)), "0.05 ETB");
-        assert_eq!(settings.format_money(Money::from_minor(100_000_000)), "1,000,000.00 ETB");
-        assert_eq!(settings.format_money(Money::from_minor(-25_000)), "-250.00 ETB");
+        assert_eq!(
+            settings.format_money(Money::from_minor(100_000_000)),
+            "1,000,000.00 ETB"
+        );
+        assert_eq!(
+            settings.format_money(Money::from_minor(-25_000)),
+            "-250.00 ETB"
+        );
     }
 
     #[test]
     fn money_formats_without_a_currency_before_setup() {
         let settings = Settings::load(&fresh()).unwrap();
-        assert_eq!(settings.format_money(Money::from_minor(288_200)), "2,882.00");
+        assert_eq!(
+            settings.format_money(Money::from_minor(288_200)),
+            "2,882.00"
+        );
     }
 
     #[test]
@@ -445,7 +466,10 @@ mod tests {
     fn the_reference_mode_names_its_own_field() {
         assert_eq!(TabReference::Table.prompt(), "Table number");
         assert_eq!(TabReference::CustomerPhone.prompt(), "Customer phone");
-        assert_eq!(TabReference::parse("CUSTOMER_NAME"), TabReference::CustomerName);
+        assert_eq!(
+            TabReference::parse("CUSTOMER_NAME"),
+            TabReference::CustomerName
+        );
         // Anything unrecognised falls back to tables rather than panicking at
         // the till.
         assert_eq!(TabReference::parse("SEAT"), TabReference::Table);
@@ -459,7 +483,10 @@ mod tests {
         let conn = fresh();
         let settings = Settings::load(&conn).unwrap();
         for (key, _) in settings.iter() {
-            assert!(value_type_of(key).is_some(), "{key} is seeded but cannot be written");
+            assert!(
+                value_type_of(key).is_some(),
+                "{key} is seeded but cannot be written"
+            );
         }
     }
 }

@@ -101,11 +101,6 @@ impl BusinessCalendar {
         Ok(self.business_date_of_local(local.naive_local()))
     }
 
-    /// `YYYY-MM-DD`, the form stored on every transaction.
-    pub fn business_date_string(&self, epoch_ms: i64) -> Result<String, CalendarError> {
-        Ok(self.business_date_for(epoch_ms)?.format("%Y-%m-%d").to_string())
-    }
-
     pub fn expected_start(&self, date: NaiveDate) -> NaiveDateTime {
         date.and_time(self.day_start.to_naive())
     }
@@ -125,17 +120,6 @@ impl BusinessCalendar {
     /// §4.6. Required for the night somebody forgets to close and goes home.
     pub fn is_overdue(&self, date: NaiveDate, now_local: NaiveDateTime) -> bool {
         now_local > self.expected_end(date)
-    }
-
-    /// The epoch-ms form stored on `shifts.expected_end_at`, snapshotted at
-    /// open so a later settings change cannot make old nights look overdue.
-    pub fn expected_end_epoch_ms(&self, date: NaiveDate) -> Result<i64, CalendarError> {
-        let naive = self.expected_end(date);
-        Local
-            .from_local_datetime(&naive)
-            .single()
-            .map(|dt| dt.timestamp_millis())
-            .ok_or(CalendarError::BadInstant(naive.and_utc().timestamp_millis()))
     }
 }
 
@@ -235,7 +219,10 @@ mod tests {
     #[test]
     fn the_expected_end_crosses_midnight_for_a_club() {
         let cal = BusinessCalendar::default();
-        assert_eq!(cal.expected_start(date(2026, 8, 14)), at(2026, 8, 14, 18, 0));
+        assert_eq!(
+            cal.expected_start(date(2026, 8, 14)),
+            at(2026, 8, 14, 18, 0)
+        );
         assert_eq!(cal.expected_end(date(2026, 8, 14)), at(2026, 8, 15, 6, 0));
     }
 

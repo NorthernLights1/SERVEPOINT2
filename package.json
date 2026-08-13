@@ -9,8 +9,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "app": "tauri dev",
-    "schema-check": "node tools/schema-check.mjs"
+    "app": "tauri dev"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.9.0",

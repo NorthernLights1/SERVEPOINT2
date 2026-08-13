@@ -21,18 +21,27 @@ pub enum Counter {
     Shift,
     IssueReceipt,
     CustomerReceipt,
+    /// Catalogue and staff identity. Unlike the four above these are never
+    /// printed on paper a customer holds; they exist so that nobody has to
+    /// invent a unique code while standing at a bar.
+    Product,
+    SaleItem,
+    Staff,
 }
 
 impl Counter {
     /// The `sequences.name` this counter lives under. The column has a CHECK
-    /// listing exactly these four, so a typo here fails loudly at the first
-    /// allocation rather than silently creating a fifth counter.
+    /// listing exactly these seven, so a typo here fails loudly at the first
+    /// allocation rather than silently creating an eighth counter.
     pub const fn row(self) -> &'static str {
         match self {
             Counter::Tab => "TAB",
             Counter::Shift => "SHIFT",
             Counter::IssueReceipt => "ISSUE_RECEIPT",
             Counter::CustomerReceipt => "CUSTOMER_RECEIPT",
+            Counter::Product => "PRODUCT",
+            Counter::SaleItem => "SALE_ITEM",
+            Counter::Staff => "STAFF",
         }
     }
 
@@ -42,6 +51,9 @@ impl Counter {
             Counter::Shift => "SHIFT-",
             Counter::IssueReceipt => "BR-",
             Counter::CustomerReceipt => "CR-",
+            Counter::Product => "PRD-",
+            Counter::SaleItem => "ITM-",
+            Counter::Staff => "STF-",
         }
     }
 }

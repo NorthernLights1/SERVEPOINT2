@@ -81,19 +81,44 @@ const fn field(
     label: &'static str,
     help: &'static str,
 ) -> Spec {
-    Spec { key, kind, label, help, choices: &[], reveals: &[] }
+    Spec {
+        key,
+        kind,
+        label,
+        help,
+        choices: &[],
+        reveals: &[],
+    }
 }
 
 const TAX_MODE: [Choice; 2] = [
-    Choice { value: "1", label: "Menu prices already include VAT" },
-    Choice { value: "0", label: "VAT is added on top of menu prices" },
+    Choice {
+        value: "1",
+        label: "Menu prices already include VAT",
+    },
+    Choice {
+        value: "0",
+        label: "VAT is added on top of menu prices",
+    },
 ];
 
 const REFERENCE_MODES: [Choice; 4] = [
-    Choice { value: "TABLE", label: "Table number" },
-    Choice { value: "CUSTOMER_NAME", label: "Customer name" },
-    Choice { value: "CUSTOMER_PHONE", label: "Customer phone" },
-    Choice { value: "CUSTOM", label: "Something else" },
+    Choice {
+        value: "TABLE",
+        label: "Table number",
+    },
+    Choice {
+        value: "CUSTOMER_NAME",
+        label: "Customer name",
+    },
+    Choice {
+        value: "CUSTOMER_PHONE",
+        label: "Customer phone",
+    },
+    Choice {
+        value: "CUSTOM",
+        label: "Something else",
+    },
 ];
 
 /// Build the Settings screen against the current values.
@@ -257,7 +282,11 @@ mod tests {
         for group in form() {
             for field in group.fields {
                 assert!(!field.label.is_empty(), "{} has no label", field.key);
-                assert!(field.help.len() > 20, "{} needs a real explanation", field.key);
+                assert!(
+                    field.help.len() > 20,
+                    "{} needs a real explanation",
+                    field.key
+                );
             }
         }
     }
@@ -265,7 +294,11 @@ mod tests {
     #[test]
     fn a_key_appears_at_most_once() {
         let groups = form();
-        let mut seen: Vec<&str> = groups.iter().flat_map(|g| &g.fields).map(|f| f.key).collect();
+        let mut seen: Vec<&str> = groups
+            .iter()
+            .flat_map(|g| &g.fields)
+            .map(|f| f.key)
+            .collect();
         let total = seen.len();
         seen.sort_unstable();
         seen.dedup();
@@ -296,8 +329,11 @@ mod tests {
         // was rejected in part because things could not be fixed from the
         // interface, so this test names them explicitly.
         let groups = form();
-        let keys_on_form: Vec<&str> =
-            groups.iter().flat_map(|g| &g.fields).map(|f| f.key).collect();
+        let keys_on_form: Vec<&str> = groups
+            .iter()
+            .flat_map(|g| &g.fields)
+            .map(|f| f.key)
+            .collect();
         for required in [
             keys::TAX_ENABLED,
             keys::TAX_RATE_BP,
@@ -313,7 +349,10 @@ mod tests {
             keys::TIN,
             keys::CURRENCY_CODE,
         ] {
-            assert!(keys_on_form.contains(&required), "{required} is not reachable from Settings");
+            assert!(
+                keys_on_form.contains(&required),
+                "{required} is not reachable from Settings"
+            );
         }
     }
 

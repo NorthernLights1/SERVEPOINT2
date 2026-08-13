@@ -135,8 +135,13 @@ fn hex(bytes: &[u8]) -> String {
 /// 4471 was altered" is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChainStatus {
-    Intact { rows: usize },
-    Broken { sequence_no: i64, reason: BreakReason },
+    Intact {
+        rows: usize,
+    },
+    Broken {
+        sequence_no: i64,
+        reason: BreakReason,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -177,7 +182,9 @@ pub fn verify_chain<'a>(rows: impl IntoIterator<Item = (AuditEntry<'a>, &'a str)
         if entry.sequence_no != expected_seq {
             return ChainStatus::Broken {
                 sequence_no: entry.sequence_no,
-                reason: BreakReason::SequenceGap { expected: expected_seq },
+                reason: BreakReason::SequenceGap {
+                    expected: expected_seq,
+                },
             };
         }
         if entry.prev_hash != running {
@@ -237,7 +244,9 @@ mod tests {
         // INSERT at the till rather than a test failure.
         let hash = entry(1, "SHIFT_OPENED", "shift", GENESIS_HASH).row_hash();
         assert_eq!(hash.len(), 64);
-        assert!(hash.chars().all(|c| c.is_ascii_hexdigit() && !c.is_uppercase()));
+        assert!(hash
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_uppercase()));
     }
 
     #[test]
@@ -247,7 +256,10 @@ mod tests {
         // "ORDER_VOIDED" + "_42".
         let a = entry(1, "ORDER_VOID", "ED_42", GENESIS_HASH).row_hash();
         let b = entry(1, "ORDER_VOIDED", "_42", GENESIS_HASH).row_hash();
-        assert_ne!(a, b, "shuffling a character between fields must change the hash");
+        assert_ne!(
+            a, b,
+            "shuffling a character between fields must change the hash"
+        );
     }
 
     #[test]
@@ -290,10 +302,16 @@ mod tests {
         // Somebody edits the action of row 2 in a SQLite browser but cannot
         // recompute the hash without rewriting the rest of the chain.
         let tampered = entry(2, "ORDER_VOIDED", "order", &first_hash);
-        let status = verify_chain([(first, first_hash.as_str()), (tampered, second_hash.as_str())]);
+        let status = verify_chain([
+            (first, first_hash.as_str()),
+            (tampered, second_hash.as_str()),
+        ]);
         assert_eq!(
             status,
-            ChainStatus::Broken { sequence_no: 2, reason: BreakReason::ContentAltered }
+            ChainStatus::Broken {
+                sequence_no: 2,
+                reason: BreakReason::ContentAltered
+            }
         );
     }
 
@@ -323,10 +341,16 @@ mod tests {
         let foreign = entry(2, "ORDER_ISSUED", "order", GENESIS_HASH);
         let foreign_hash = foreign.row_hash();
 
-        let status = verify_chain([(first, first_hash.as_str()), (foreign, foreign_hash.as_str())]);
+        let status = verify_chain([
+            (first, first_hash.as_str()),
+            (foreign, foreign_hash.as_str()),
+        ]);
         assert_eq!(
             status,
-            ChainStatus::Broken { sequence_no: 2, reason: BreakReason::PrevHashMismatch }
+            ChainStatus::Broken {
+                sequence_no: 2,
+                reason: BreakReason::PrevHashMismatch
+            }
         );
     }
 

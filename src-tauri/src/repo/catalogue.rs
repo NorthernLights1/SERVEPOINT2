@@ -8,12 +8,12 @@
 
 use std::collections::BTreeMap;
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
 use super::{guarded, RepoError, Result};
 use crate::{Milli, Money};
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Product {
     pub id: i64,
     pub code: String,
@@ -21,17 +21,48 @@ pub struct Product {
     pub category: String,
     pub base_unit: String,
     pub base_units_per_pack: i64,
+    pub units_per_purchase_pack: i64,
     pub low_stock_threshold: Milli,
     pub tracks_inventory: bool,
+    pub destination: String,
     pub avg_cost: Money,
     pub active: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct NewProduct<'a> {
+    pub code: &'a str,
+    pub name: &'a str,
+    pub category: &'a str,
+    pub base_unit: &'a str,
+    pub base_units_per_pack: Milli,
+    pub units_per_purchase_pack: i64,
+    pub low_stock_threshold: Milli,
+    pub tracks_inventory: bool,
+    pub destination: &'a str,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SaleItem {
+    pub id: i64,
+    pub code: String,
+    pub name: String,
+    pub category: String,
+    pub active: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct NewSaleItem<'a> {
+    pub code: &'a str,
+    pub name: &'a str,
+    pub category: &'a str,
 }
 
 /// A line on the menu: the item, what it costs tonight, and the recipe version
 /// currently in force. All three are read together because an order line
 /// snapshots all three, and reading them in separate queries would leave a
 /// window where the price came from one moment and the recipe from another.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MenuItem {
     pub sale_item_id: i64,
     pub code: String,
@@ -51,7 +82,8 @@ pub struct Consumed {
 }
 
 const PRODUCT_COLUMNS: &str = "id, code, name, category, base_unit, base_units_per_pack,
-     low_stock_threshold_milli, tracks_inventory, avg_cost_minor, active";
+     units_per_purchase_pack, low_stock_threshold_milli, tracks_inventory, destination,
+     avg_cost_minor, active";
 
 fn read_product(row: &rusqlite::Row<'_>) -> rusqlite::Result<Product> {
     Ok(Product {
@@ -61,11 +93,178 @@ fn read_product(row: &rusqlite::Row<'_>) -> rusqlite::Result<Product> {
         category: row.get(3)?,
         base_unit: row.get(4)?,
         base_units_per_pack: row.get(5)?,
-        low_stock_threshold: Milli::from_thousandths(row.get(6)?),
-        tracks_inventory: row.get::<_, i64>(7)? == 1,
-        avg_cost: Money::from_minor(row.get(8)?),
-        active: row.get::<_, i64>(9)? == 1,
+        units_per_purchase_pack: row.get(6)?,
+        low_stock_threshold: Milli::from_thousandths(row.get(7)?),
+        tracks_inventory: row.get::<_, i64>(8)? == 1,
+        destination: row.get(9)?,
+        avg_cost: Money::from_minor(row.get(10)?),
+        active: row.get::<_, i64>(11)? == 1,
     })
+}
+
+fn validate_product(input: &NewProduct<'_>) -> Result<()> {
+    if input.code.trim().is_empty() {
+        return super::refuse("a product needs a code");
+    }
+    if input.name.trim().is_empty() {
+        return super::refuse("a product needs a name");
+    }
+    if input.base_units_per_pack.is_zero() || input.base_units_per_pack.is_negative() {
+        return super::refuse("base units per pack must be greater than zero");
+    }
+    if input.units_per_purchase_pack <= 0 {
+        return super::refuse("purchase-pack units must be greater than zero");
+    }
+    if input.low_stock_threshold.is_negative() {
+        return super::refuse("a low-stock threshold cannot be negative");
+    }
+    Ok(())
+}
+
+pub fn add_product(conn: &Connection, input: &NewProduct<'_>, at: i64) -> Result<i64> {
+    validate_product(input)?;
+    guarded!(conn.execute(
+        "INSERT INTO products
+             (code, name, category, base_unit, base_units_per_pack,
+              units_per_purchase_pack, low_stock_threshold_milli,
+              tracks_inventory, destination, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        rusqlite::params![
+            input.code.trim(),
+            input.name.trim(),
+            input.category.trim(),
+            input.base_unit,
+            input.base_units_per_pack.thousandths(),
+            input.units_per_purchase_pack,
+            input.low_stock_threshold.thousandths(),
+            i64::from(input.tracks_inventory),
+            input.destination,
+            at,
+        ],
+    ))?;
+    Ok(conn.last_insert_rowid())
+}
+
+pub fn update_product(
+    conn: &Connection,
+    id: i64,
+    input: &NewProduct<'_>,
+    active: bool,
+) -> Result<()> {
+    validate_product(input)?;
+    let changed = guarded!(conn.execute(
+        "UPDATE products
+            SET code = ?2, name = ?3, category = ?4, base_unit = ?5,
+                base_units_per_pack = ?6, units_per_purchase_pack = ?7,
+                low_stock_threshold_milli = ?8, tracks_inventory = ?9,
+                destination = ?10, active = ?11
+          WHERE id = ?1",
+        rusqlite::params![
+            id,
+            input.code.trim(),
+            input.name.trim(),
+            input.category.trim(),
+            input.base_unit,
+            input.base_units_per_pack.thousandths(),
+            input.units_per_purchase_pack,
+            input.low_stock_threshold.thousandths(),
+            i64::from(input.tracks_inventory),
+            input.destination,
+            i64::from(active),
+        ],
+    ))?;
+    if changed == 0 {
+        return Err(RepoError::Missing { what: "product" });
+    }
+    Ok(())
+}
+
+fn read_sale_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<SaleItem> {
+    Ok(SaleItem {
+        id: row.get(0)?,
+        code: row.get(1)?,
+        name: row.get(2)?,
+        category: row.get(3)?,
+        active: row.get::<_, i64>(4)? == 1,
+    })
+}
+
+pub fn sale_item(conn: &Connection, id: i64) -> Result<SaleItem> {
+    conn.query_row(
+        "SELECT id, code, name, category, active FROM sale_items WHERE id = ?1",
+        [id],
+        read_sale_item,
+    )
+    .map_err(|err| match err {
+        rusqlite::Error::QueryReturnedNoRows => RepoError::Missing { what: "sale item" },
+        other => RepoError::Sqlite(other),
+    })
+}
+
+fn validate_sale_item(input: &NewSaleItem<'_>) -> Result<()> {
+    if input.code.trim().is_empty() {
+        return super::refuse("a sale item needs a code");
+    }
+    if input.name.trim().is_empty() {
+        return super::refuse("a sale item needs a name");
+    }
+    if input.category.trim().is_empty() {
+        return super::refuse("a sale item needs a category");
+    }
+    Ok(())
+}
+
+pub fn add_sale_item(conn: &Connection, input: &NewSaleItem<'_>, at: i64) -> Result<i64> {
+    validate_sale_item(input)?;
+    guarded!(conn.execute(
+        "INSERT INTO sale_items (code, name, category, created_at) VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![
+            input.code.trim(),
+            input.name.trim(),
+            input.category.trim(),
+            at
+        ],
+    ))?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// Record that this menu entry is one shelf item sold one for one.
+///
+/// The recipe still does the drawing down; this only says the pair may be
+/// shown as a single row and priced from it. A partial unique index keeps one
+/// product from acquiring two twins.
+pub fn link_twin(conn: &Connection, sale_item_id: i64, product_id: i64) -> Result<()> {
+    let changed = guarded!(conn.execute(
+        "UPDATE sale_items SET from_product_id = ?2 WHERE id = ?1",
+        rusqlite::params![sale_item_id, product_id],
+    ))?;
+    if changed != 1 {
+        return super::refuse("that menu entry is not there to be linked to a shelf item");
+    }
+    Ok(())
+}
+
+pub fn update_sale_item(
+    conn: &Connection,
+    id: i64,
+    input: &NewSaleItem<'_>,
+    active: bool,
+) -> Result<()> {
+    validate_sale_item(input)?;
+    let changed = guarded!(conn.execute(
+        "UPDATE sale_items SET code = ?2, name = ?3, category = ?4, active = ?5 WHERE id = ?1",
+        rusqlite::params![
+            id,
+            input.code.trim(),
+            input.name.trim(),
+            input.category.trim(),
+            i64::from(active),
+        ],
+    ))?;
+    if changed == 0 {
+        return Err(RepoError::Missing { what: "sale item" });
+    }
+    Ok(())
 }
 
 pub fn products(conn: &Connection) -> Result<Vec<Product>> {
@@ -175,37 +374,49 @@ pub fn expand(conn: &Connection, recipe_id: i64, quantity: Milli) -> Result<Vec<
     // BTreeMap rather than HashMap: the order products come back in ends up in
     // the stock ledger and on the shortage message, and a stable order makes
     // both reproducible.
-    let mut totals: BTreeMap<i64, Consumed> = BTreeMap::new();
+    let mut totals: BTreeMap<i64, (String, i128)> = BTreeMap::new();
+    let mut saw_line = false;
     for row in rows {
         let (product_id, name, tracks_inventory, per_item) = row?;
-        // per_item is base units per ONE menu item, in thousandths; quantity is
-        // menu items, in thousandths. Their product is in millionths, so it is
-        // brought back to thousandths, rounded half up (§1.1).
-        let scaled = quantity
-            .thousandths()
-            .checked_mul(per_item)
-            .and_then(|product| product.checked_add(500))
-            .map(|rounded| rounded / 1_000)
+        saw_line = true;
+        if !tracks_inventory {
+            continue;
+        }
+        // Keep millionths until every duplicate product line is summed, then
+        // round once. Rounding each line independently lets two half-milli
+        // contributions become two milli instead of one (§2.5).
+        let scaled = i128::from(quantity.thousandths())
+            .checked_mul(i128::from(per_item))
             .ok_or_else(|| RepoError::Refused("that quantity is too large to pour".into()))?;
-
-        let entry = totals.entry(product_id).or_insert(Consumed {
-            product_id,
-            name,
-            quantity: Milli::ZERO,
-            tracks_inventory,
-        });
-        entry.quantity = entry
-            .quantity
-            .checked_add(Milli::from_thousandths(scaled))
-            .map_err(|_| RepoError::Refused("that quantity is too large to pour".into()))?;
+        let entry = totals.entry(product_id).or_insert((name, 0));
+        entry.1 = entry
+            .1
+            .checked_add(scaled)
+            .ok_or_else(|| RepoError::Refused("that quantity is too large to pour".into()))?;
     }
 
-    if totals.is_empty() {
+    if !saw_line {
         // A recipe with no lines would sell a drink that consumes nothing —
         // free stock forever, and invisible on every variance report.
         return super::refuse("that item has no recipe, so nothing could be taken off the shelf");
     }
-    Ok(totals.into_values().collect())
+    totals
+        .into_iter()
+        .map(|(product_id, (name, millionths))| {
+            let rounded = millionths
+                .checked_add(500)
+                .ok_or_else(|| RepoError::Refused("that quantity is too large to pour".into()))?
+                / 1_000;
+            let rounded = i64::try_from(rounded)
+                .map_err(|_| RepoError::Refused("that quantity is too large to pour".into()))?;
+            Ok(Consumed {
+                product_id,
+                name,
+                quantity: Milli::from_thousandths(rounded),
+                tracks_inventory: true,
+            })
+        })
+        .collect()
 }
 
 /// Close the open recipe and open the next version (§2.3). Never an edit: an
@@ -226,7 +437,11 @@ pub fn revise_recipe(
             [sale_item_id],
             |row| row.get(0),
         )
-        .ok();
+        .optional()?;
+    let next_version = previous
+        .unwrap_or(0)
+        .checked_add(1)
+        .ok_or_else(|| RepoError::Refused("that recipe has too many versions".into()))?;
     if previous.is_some() {
         guarded!(conn.execute(
             "UPDATE recipes SET effective_to = ?2
@@ -238,7 +453,7 @@ pub fn revise_recipe(
     guarded!(conn.execute(
         "INSERT INTO recipes (sale_item_id, version, effective_from, created_by)
          VALUES (?1, ?2, ?3, ?4)",
-        rusqlite::params![sale_item_id, previous.unwrap_or(0) + 1, at, by],
+        rusqlite::params![sale_item_id, next_version, at, by],
     ))?;
     let recipe_id = conn.last_insert_rowid();
 
@@ -317,6 +532,18 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_recipe_lines_round_once_after_they_are_aggregated() {
+        let bar = fixture::bar();
+        let item = fixture::sale_item(&bar.conn, "S-TINY", "Tiny pour", "Test", 100);
+        let recipe = fixture::recipe(&bar.conn, item, &[(bar.gin, 1), (bar.gin, 1)]);
+
+        let consumed = expand(&bar.conn, recipe, Milli::from_thousandths(500)).unwrap();
+
+        assert_eq!(consumed.len(), 1);
+        assert_eq!(consumed[0].quantity, Milli::from_thousandths(1));
+    }
+
+    #[test]
     fn an_item_with_no_open_price_is_not_on_the_menu() {
         // Better to be missing from the till than to be ringable at a price
         // nobody set.
@@ -327,7 +554,11 @@ mod tests {
                 rusqlite::params![NOW, bar.gin_shot],
             )
             .unwrap();
-        let codes: Vec<String> = menu(&bar.conn).unwrap().into_iter().map(|m| m.code).collect();
+        let codes: Vec<String> = menu(&bar.conn)
+            .unwrap()
+            .into_iter()
+            .map(|m| m.code)
+            .collect();
         assert!(!codes.contains(&"S-GIN".to_string()), "got: {codes:?}");
     }
 
@@ -349,7 +580,11 @@ mod tests {
         assert_ne!(before, after);
         let old = expand(&bar.conn, before, Milli::ONE).unwrap();
         let gin = old.iter().find(|c| c.product_id == bar.gin).unwrap();
-        assert_eq!(gin.quantity, Milli::from_units(2), "the old version still pours a double");
+        assert_eq!(
+            gin.quantity,
+            Milli::from_units(2),
+            "the old version still pours a double"
+        );
     }
 
     #[test]
@@ -372,10 +607,64 @@ mod tests {
     }
 
     #[test]
+    fn expansion_drops_products_that_do_not_track_inventory() {
+        let bar = fixture::bar();
+        bar.conn
+            .execute(
+                "UPDATE products SET tracks_inventory = 0 WHERE id = ?1",
+                [bar.beer],
+            )
+            .unwrap();
+        let item = menu_item(&bar.conn, bar.beer_bottle).unwrap();
+
+        assert!(expand(&bar.conn, item.recipe_id, Milli::ONE)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn recipe_version_overflow_is_refused_without_panicking() {
+        let bar = fixture::bar();
+        bar.conn
+            .execute(
+                "UPDATE recipes SET effective_to = ?2
+                  WHERE sale_item_id = ?1 AND effective_to IS NULL",
+                rusqlite::params![bar.beer_bottle, NOW + 1],
+            )
+            .unwrap();
+        bar.conn
+            .execute(
+                "INSERT INTO recipes (sale_item_id, version, effective_from, created_by)
+                 VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![bar.beer_bottle, i64::MAX, NOW + 1, bar.owner],
+            )
+            .unwrap();
+
+        let result = revise_recipe(
+            &bar.conn,
+            bar.beer_bottle,
+            &[(bar.beer, Milli::ONE)],
+            NOW + 2,
+            bar.owner,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn repricing_closes_the_old_price_instead_of_editing_it() {
         let bar = fixture::bar();
-        reprice(&bar.conn, bar.beer_bottle, Money::from_minor(6_000), NOW + 1, bar.owner).unwrap();
-        assert_eq!(menu_item(&bar.conn, bar.beer_bottle).unwrap().price.minor(), 6_000);
+        reprice(
+            &bar.conn,
+            bar.beer_bottle,
+            Money::from_minor(6_000),
+            NOW + 1,
+            bar.owner,
+        )
+        .unwrap();
+        assert_eq!(
+            menu_item(&bar.conn, bar.beer_bottle).unwrap().price.minor(),
+            6_000
+        );
 
         let history: i64 = bar
             .conn

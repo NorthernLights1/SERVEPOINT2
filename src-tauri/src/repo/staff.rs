@@ -76,12 +76,15 @@ fn read(row: &rusqlite::Row<'_>) -> rusqlite::Result<Person> {
 }
 
 pub fn find(conn: &Connection, id: i64) -> Result<Person> {
-    conn.query_row(&format!("SELECT {COLUMNS} FROM staff WHERE id = ?1"), [id], read).map_err(
-        |err| match err {
-            rusqlite::Error::QueryReturnedNoRows => RepoError::Missing { what: "person" },
-            other => RepoError::Sqlite(other),
-        },
+    conn.query_row(
+        &format!("SELECT {COLUMNS} FROM staff WHERE id = ?1"),
+        [id],
+        read,
     )
+    .map_err(|err| match err {
+        rusqlite::Error::QueryReturnedNoRows => RepoError::Missing { what: "person" },
+        other => RepoError::Sqlite(other),
+    })
 }
 
 /// Everyone still on the books, owners first, then cashiers, then waiters —
@@ -158,9 +161,19 @@ mod tests {
         // A waiter with a PIN implies a login that does not exist, and would
         // put someone who never operates the till into the sign-in list.
         let bar = fixture::bar();
-        let err =
-            add(&bar.conn, "WTR-9", "Hana", Role::Waiter, Some(("salt", "hash")), NOW).unwrap_err();
-        assert!(err.to_string().contains("only owners and cashiers"), "got: {err}");
+        let err = add(
+            &bar.conn,
+            "WTR-9",
+            "Hana",
+            Role::Waiter,
+            Some(("salt", "hash")),
+            NOW,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("only owners and cashiers"),
+            "got: {err}"
+        );
     }
 
     #[test]

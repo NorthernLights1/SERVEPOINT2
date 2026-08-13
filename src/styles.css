@@ -1180,3 +1180,147 @@ button {
     padding-right: var(--gap-4);
   }
 }
+
+/* -------------------------------------------------------------------------- */
+/* Rows — tabs, menu items and shelf lines. One shape for every list a till     */
+/* shows, so a tab and a bottle are scanned the same way at speed.             */
+/* -------------------------------------------------------------------------- */
+
+.rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.rows > li + li {
+  border-top: 1px solid var(--line);
+}
+
+.row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--gap-4);
+  padding: var(--gap-4) var(--gap-5);
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.row:hover {
+  background: var(--sunken);
+}
+
+.row[aria-pressed="true"] {
+  background: var(--accent-soft);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.row--static {
+  cursor: default;
+}
+
+.row--static:hover {
+  background: none;
+}
+
+.row__main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-1);
+  min-width: 0;
+}
+
+.row__main .muted {
+  font-size: 0.85rem;
+}
+
+.row__value {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-2);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* A count that has to be readable and hittable across a bar at arm's length. */
+.stepper {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-3);
+}
+
+.stepper > span {
+  min-width: 1.5rem;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.stepper > button {
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line-strong);
+  background: var(--raised);
+  color: var(--ink);
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.stepper > button:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* A bill. Labels left, money right, and the last row is the one that matters. */
+.totals {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: var(--gap-2) var(--gap-4);
+  margin: 0;
+}
+
+.totals dt {
+  color: var(--ink-muted);
+}
+
+.totals dd {
+  margin: 0;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.totals dt:last-of-type,
+.totals dd:last-of-type {
+  padding-top: var(--gap-2);
+  border-top: 1px solid var(--line);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+/* A tick box with its explanation beside it, not stranded under the form. */
+.check {
+  display: flex;
+  gap: var(--gap-2);
+  align-items: flex-start;
+  cursor: pointer;
+}
+
+.check input {
+  width: 1.15rem;
+  height: 1.15rem;
+  margin-top: 0.15rem;
+  flex: none;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.check > span {
+  display: grid;
+  gap: 0.15rem;
+}
