@@ -39,6 +39,8 @@ fn venue() -> Venue {
 fn beer() -> NewProduct {
     NewProduct {
         sale_price: None,
+        content_measure: commissioning::Measure::None,
+        content_per_unit: Milli::ZERO,
         name: "Beer".into(),
         category: "Bottles".into(),
         base_unit: BaseUnit::Bottle,
@@ -146,6 +148,118 @@ fn a_product_with_no_price_stays_off_the_menu_until_it_is_asked_for() {
     assert_eq!(menu[0].price, Money::from_minor(12_000));
 }
 
+/// A club pours by measure. The owner writes "30ml of whiskey"; the ledger
+/// holds the fraction of a bottle that is, so nothing downstream has to learn
+/// a second unit.
+#[test]
+fn a_recipe_written_in_millilitres_is_stored_as_a_fraction_of_a_bottle() {
+    let mut venue = venue();
+    let whiskey = commissioning::create_product(
+        &mut venue.conn,
+        venue.owner,
+        &NewProduct {
+            name: "Whiskey".into(),
+            content_measure: commissioning::Measure::Ml,
+            content_per_unit: Milli::from_units(750),
+            ..beer()
+        },
+        NOW,
+    )
+    .unwrap();
+    let beer_product =
+        commissioning::create_product(&mut venue.conn, venue.owner, &beer(), NOW).unwrap();
+    let item = commissioning::create_sale_item(
+        &mut venue.conn,
+        venue.owner,
+        &NewSaleItem {
+            name: "Boilermaker".into(),
+            category: "Cocktails".into(),
+        },
+        NOW,
+    )
+    .unwrap();
+
+    commissioning::revise_recipe(
+        &mut venue.conn,
+        venue.owner,
+        item.entity_id,
+        &[
+            // One shot of a 750ml bottle.
+            RecipeLine {
+                product_id: whiskey.entity_id,
+                quantity: Milli::from_units(30),
+                in_measure: true,
+            },
+            // A whole bottle of beer, in counted units as before.
+            RecipeLine {
+                product_id: beer_product.entity_id,
+                quantity: Milli::ONE,
+                in_measure: false,
+            },
+        ],
+        NOW + 1,
+    )
+    .unwrap();
+
+    let stored: Vec<i64> = venue
+        .conn
+        .prepare(
+            "SELECT l.quantity_milli FROM recipe_lines l
+               JOIN recipes r ON r.id = l.recipe_id
+              WHERE r.effective_to IS NULL ORDER BY l.product_id",
+        )
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    // 30/750 is 0.040 of a bottle; the beer is one whole bottle.
+    assert_eq!(stored, [40, 1_000]);
+}
+
+/// A pour so small it would round to nothing must be refused rather than
+/// silently drawing zero stock every time the drink is sold.
+#[test]
+fn a_measure_too_small_to_draw_anything_is_refused() {
+    let mut venue = venue();
+    let product = commissioning::create_product(
+        &mut venue.conn,
+        venue.owner,
+        &NewProduct {
+            content_measure: commissioning::Measure::Ml,
+            content_per_unit: Milli::from_units(750),
+            ..beer()
+        },
+        NOW,
+    )
+    .unwrap();
+    let item = commissioning::create_sale_item(
+        &mut venue.conn,
+        venue.owner,
+        &NewSaleItem {
+            name: "Bitters".into(),
+            category: "Cocktails".into(),
+        },
+        NOW,
+    )
+    .unwrap();
+
+    let refused = commissioning::revise_recipe(
+        &mut venue.conn,
+        venue.owner,
+        item.entity_id,
+        &[RecipeLine {
+            product_id: product.entity_id,
+            // Under a thousandth of a 750ml bottle.
+            quantity: Milli::from_thousandths(300),
+            in_measure: true,
+        }],
+        NOW + 1,
+    )
+    .unwrap_err();
+    assert!(refused.to_string().contains("too small"), "got: {refused}");
+}
+
 #[test]
 fn staff_pins_are_hashed_but_never_written_to_the_audit_log() {
     let mut venue = venue();
@@ -210,6 +324,7 @@ fn a_sale_item_becomes_sellable_only_after_recipe_and_price_versions_exist() {
         &[RecipeLine {
             product_id: product.entity_id,
             quantity: Milli::ONE,
+            in_measure: false,
         }],
         NOW + 2,
     )
@@ -304,6 +419,7 @@ fn a_failed_recipe_audit_leaves_the_previous_version_open() {
         &[RecipeLine {
             product_id: product.entity_id,
             quantity: Milli::ONE,
+            in_measure: false,
         }],
         NOW,
     )
@@ -324,6 +440,7 @@ fn a_failed_recipe_audit_leaves_the_previous_version_open() {
         &[RecipeLine {
             product_id: product.entity_id,
             quantity: Milli::from_units(2),
+            in_measure: false,
         }],
         NOW + 1,
     )
@@ -430,6 +547,8 @@ fn owner_updates_to_staff_products_and_sale_items_store_before_and_after_facts()
         venue.owner,
         product.entity_id,
         &ProductUpdate {
+            content_measure: commissioning::Measure::None,
+            content_per_unit: Milli::ZERO,
             name: "Amber Beer".into(),
             category: "Beer".into(),
             base_unit: BaseUnit::Bottle,

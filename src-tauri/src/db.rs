@@ -89,6 +89,11 @@ pub const MIGRATIONS: &[(i64, &str, &str)] = &[
         "0013_items.sql",
         include_str!("../migrations/0013_items.sql"),
     ),
+    (
+        14,
+        "0014_measures.sql",
+        include_str!("../migrations/0014_measures.sql"),
+    ),
 ];
 
 #[derive(Debug, thiserror::Error)]

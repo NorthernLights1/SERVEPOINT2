@@ -10,7 +10,7 @@
 use rusqlite::Connection;
 
 use crate::commands::{require_owner, require_session, CommandError};
-use crate::commissioning::{self, BaseUnit, Destination};
+use crate::commissioning::{self, BaseUnit, Destination, Measure};
 use crate::repo::{catalogue, staff, stock};
 use crate::settings::Settings;
 use crate::state::AppState;
@@ -60,6 +60,14 @@ pub struct ProductForm {
     /// only — it is on the shelf but never ordered by name.
     #[serde(default)]
     pub sale_price: Option<String>,
+    /// `NONE`, `ML` or `GRAM` — what one counted unit holds, so recipes can be
+    /// written as "30ml" rather than as a fraction of a bottle.
+    #[serde(default)]
+    pub content_measure: Measure,
+    /// How much of that measure is in one counted unit, as thousandths:
+    /// 750000 for a 750ml bottle. Ignored when the measure is NONE.
+    #[serde(default)]
+    pub content_per_unit_milli: i64,
     pub name: String,
     pub category: String,
     pub base_unit: BaseUnit,
@@ -86,7 +94,11 @@ pub struct SaleItemForm {
 #[serde(rename_all = "camelCase")]
 pub struct RecipeLineForm {
     pub product_id: i64,
+    /// Counted units, or the product's own measure when `in_measure` is set:
+    /// 30000 with `inMeasure` means 30ml, and Rust does the division.
     pub quantity_milli: i64,
+    #[serde(default)]
+    pub in_measure: bool,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -120,6 +132,10 @@ pub struct ProductLine {
     pub sale_item_id: Option<i64>,
     /// What it sells for, already formatted. `None` when it is stock only.
     pub price: Option<String>,
+    /// `NONE`, `ML` or `GRAM`.
+    pub content_measure: String,
+    /// How much one counted unit holds, formatted: `"750"`. Empty when none.
+    pub content_per_unit: String,
     pub code: String,
     pub name: String,
     pub category: String,
@@ -140,6 +156,12 @@ pub struct RecipeLineView {
     pub name: String,
     pub quantity_milli: i64,
     pub quantity: String,
+    /// `NONE`, `ML` or `GRAM`.
+    pub measure: String,
+    /// The same amount read back in that measure — `"30"` for 30ml — so the
+    /// screen shows what was typed rather than a fraction of a bottle. Empty
+    /// when the product has no measure.
+    pub measure_quantity: String,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -223,6 +245,12 @@ fn product_lines(conn: &Connection, settings: &Settings) -> Result<Vec<ProductLi
                     .and_then(|(_, minor)| minor)
                     .map(|minor| settings.format_money(Money::from_minor(minor))),
                 id: product.id,
+                content_per_unit: if product.content_measure == "NONE" {
+                    String::new()
+                } else {
+                    product.content_per_unit.to_display()
+                },
+                content_measure: product.content_measure,
                 code: product.code,
                 name: product.name,
                 category: product.category,
@@ -247,6 +275,18 @@ fn product_lines(conn: &Connection, settings: &Settings) -> Result<Vec<ProductLi
 /// with a recipe: this is an administration screen opened occasionally, not
 /// the till.
 fn sale_item_lines(conn: &Connection, settings: &Settings) -> Result<Vec<SaleItemLine>> {
+    // What each product is measured in, so a line written as "30ml" can be
+    // shown back the same way instead of as 0.04 of a bottle.
+    let measures: std::collections::BTreeMap<i64, (String, Milli)> = catalogue::products(conn)?
+        .into_iter()
+        .map(|product| {
+            (
+                product.id,
+                (product.content_measure, product.content_per_unit),
+            )
+        })
+        .collect();
+
     let mut statement = conn.prepare(
         "SELECT s.id, s.code, s.name, s.category, s.active, p.price_minor, r.id,
                 s.from_product_id
@@ -277,11 +317,26 @@ fn sale_item_lines(conn: &Connection, settings: &Settings) -> Result<Vec<SaleIte
                 let recipe: Vec<RecipeLineView> = match recipe_id {
                     Some(recipe_id) => catalogue::expand(conn, recipe_id, Milli::ONE)?
                         .into_iter()
-                        .map(|consumed| RecipeLineView {
-                            product_id: consumed.product_id,
-                            name: consumed.name,
-                            quantity_milli: consumed.quantity.thousandths(),
-                            quantity: consumed.quantity.to_display(),
+                        .map(|consumed| {
+                            let measured = measures.get(&consumed.product_id);
+                            let measure = measured
+                                .map(|(kind, _)| kind.clone())
+                                .unwrap_or_else(|| "NONE".to_owned());
+                            let measure_quantity = match measured {
+                                Some((kind, per_unit)) if kind != "NONE" => {
+                                    catalogue::units_to_measure(consumed.quantity, *per_unit)
+                                        .to_display()
+                                }
+                                _ => String::new(),
+                            };
+                            RecipeLineView {
+                                product_id: consumed.product_id,
+                                name: consumed.name,
+                                quantity_milli: consumed.quantity.thousandths(),
+                                quantity: consumed.quantity.to_display(),
+                                measure,
+                                measure_quantity,
+                            }
                         })
                         .collect(),
                     None => Vec::new(),
@@ -391,6 +446,8 @@ fn product_of(form: &ProductForm) -> Result<commissioning::NewProduct> {
     };
     Ok(commissioning::NewProduct {
         sale_price,
+        content_measure: form.content_measure,
+        content_per_unit: Milli::from_thousandths(form.content_per_unit_milli.max(0)),
         name: form.name.trim().to_owned(),
         category: form.category.trim().to_owned(),
         base_unit: form.base_unit,
@@ -420,6 +477,8 @@ pub fn sell_product(state: &AppState, product_id: i64, price: &str) -> Result<Se
 pub fn edit_product(state: &AppState, product_id: i64, form: &ProductForm) -> Result<SetupView> {
     let new = product_of(form)?;
     let input = commissioning::ProductUpdate {
+        content_measure: new.content_measure,
+        content_per_unit: new.content_per_unit,
         name: new.name,
         category: new.category,
         base_unit: new.base_unit,
@@ -478,6 +537,7 @@ pub fn set_recipe(
             Ok(commissioning::RecipeLine {
                 product_id: line.product_id,
                 quantity: milli(line.quantity_milli, "Every recipe quantity")?,
+                in_measure: line.in_measure,
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -617,6 +677,8 @@ mod tests {
     fn product_form(name: &str) -> ProductForm {
         ProductForm {
             sale_price: None,
+            content_measure: Measure::None,
+            content_per_unit_milli: 0,
             name: name.into(),
             category: "Beer".into(),
             base_unit: BaseUnit::Bottle,
@@ -660,6 +722,7 @@ mod tests {
             &[RecipeLineForm {
                 product_id: beer,
                 quantity_milli: 1_000,
+                in_measure: false,
             }],
         )
         .unwrap();

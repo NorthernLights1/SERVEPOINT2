@@ -27,6 +27,36 @@ impl BaseUnit {
     }
 }
 
+/// What one counted unit is physically made of.
+///
+/// This is the industry model — Restaurant365 fixes a measure type per item,
+/// and pour-cost tools cost recipes in ml or oz — and it exists because a pour
+/// size belongs to the drink, not the bottle: a single is 30ml, a double 60,
+/// a cocktail 45. `None` is anything handed over whole, which is most of a
+/// club's list and stays one-tap.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum Measure {
+    #[default]
+    None,
+    Ml,
+    Gram,
+}
+
+impl Measure {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "NONE",
+            Self::Ml => "ML",
+            Self::Gram => "GRAM",
+        }
+    }
+
+    pub const fn is_measured(self) -> bool {
+        !matches!(self, Self::None)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum Destination {
@@ -68,6 +98,12 @@ pub struct NewProduct {
     /// `None` means stock-only — a mixer, or something poured into other
     /// drinks and never ordered by name.
     pub sale_price: Option<Money>,
+    /// `NONE`, `ML` or `GRAM`: what one counted unit is made of, so a recipe
+    /// can be written as "30ml" rather than "0.04 of a bottle".
+    pub content_measure: Measure,
+    /// How much of that measure one counted unit holds — 750 for a 750ml
+    /// bottle. Ignored when the measure is `None`.
+    pub content_per_unit: Milli,
     pub name: String,
     pub category: String,
     pub base_unit: BaseUnit,
@@ -80,6 +116,8 @@ pub struct NewProduct {
 
 #[derive(Clone, Debug)]
 pub struct ProductUpdate {
+    pub content_measure: Measure,
+    pub content_per_unit: Milli,
     pub name: String,
     pub category: String,
     pub base_unit: BaseUnit,
@@ -107,7 +145,12 @@ pub struct SaleItemUpdate {
 #[derive(Clone, Copy, Debug)]
 pub struct RecipeLine {
     pub product_id: i64,
+    /// Counted units when `in_measure` is false — one bottle of beer is
+    /// `Milli::ONE`. Otherwise the product's own measure: 30 means 30ml.
     pub quantity: Milli,
+    /// True when `quantity` was typed in the product's measure and still has
+    /// to be converted. The screen never does that division itself.
+    pub in_measure: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -398,6 +441,8 @@ pub fn create_product(
             low_stock_threshold: input.low_stock_threshold,
             tracks_inventory: input.tracks_inventory,
             destination: input.destination.as_str(),
+            content_measure: input.content_measure.as_str(),
+            content_per_unit: input.content_per_unit,
         },
         at,
     )?;
@@ -451,6 +496,8 @@ pub fn update_product(
             low_stock_threshold: input.low_stock_threshold,
             tracks_inventory: input.tracks_inventory,
             destination: input.destination.as_str(),
+            content_measure: input.content_measure.as_str(),
+            content_per_unit: input.content_per_unit,
         },
         input.active,
     )?;
@@ -564,10 +611,21 @@ pub fn revise_recipe(
 ) -> Result<Change> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     require_owner(&tx, actor_id)?;
+    // A line typed as "30ml" becomes the fraction of a bottle the ledger
+    // holds. Converted here rather than on the screen, and stored converted,
+    // so that everything downstream keeps reading one unit.
     let lines: Vec<(i64, Milli)> = lines
         .iter()
-        .map(|line| (line.product_id, line.quantity))
-        .collect();
+        .map(|line| {
+            let quantity = if line.in_measure {
+                let product = catalogue::product(&tx, line.product_id)?;
+                catalogue::measure_to_units(line.quantity, product.content_per_unit)?
+            } else {
+                line.quantity
+            };
+            Ok((line.product_id, quantity))
+        })
+        .collect::<Result<_>>()?;
     let id = catalogue::revise_recipe(&tx, sale_item_id, &lines, at, actor_id)?;
     let facts = format!("sale_item_id={sale_item_id};line_count={}", lines.len());
     let audit_sequence = audit(&tx, actor_id, "RECIPE_CHANGED", "recipe", id, &facts, at)?;

@@ -364,6 +364,9 @@ export interface ProductLine {
   saleItemId: number | null;
   /** What it sells for, already formatted. Null when it is stock only. */
   price: string | null;
+  contentMeasure: Measure;
+  /** How much one counted unit holds, formatted: "750". Empty when none. */
+  contentPerUnit: string;
   code: string;
   name: string;
   category: string;
@@ -379,6 +382,9 @@ export interface ProductLine {
 
 export interface RecipeLineView {
   productId: number;
+  measure: Measure;
+  /** The amount read back in that measure — "30" for 30ml. Empty when none. */
+  measureQuantity: string;
   name: string;
   quantityMilli: number;
   quantity: string;
@@ -427,6 +433,10 @@ export interface ProductForm {
    * on the shelf, never ordered by name.
    */
   salePrice?: string | null;
+  /** What one counted unit holds, so recipes can be written in ml or grams. */
+  contentMeasure?: Measure;
+  /** Thousandths of that measure in one counted unit: 750000 for a 750ml bottle. */
+  contentPerUnitMilli?: number;
   name: string;
   category: string;
   baseUnit: BaseUnit;
@@ -444,9 +454,16 @@ export interface SaleItemForm {
   active?: boolean;
 }
 
+export type Measure = "NONE" | "ML" | "GRAM";
+
 export interface RecipeLineForm {
   productId: number;
+  /**
+   * Counted units, or the product's own measure when inMeasure is set:
+   * 30000 with inMeasure means 30ml. Rust does the division, not this side.
+   */
   quantityMilli: number;
+  inMeasure?: boolean;
 }
 
 export interface OpeningStockForm {

@@ -10,7 +10,7 @@
 import { useState } from "react";
 import { useEffect } from "react";
 
-import type { ProductLine, SaleItemLine, SetupView } from "../api";
+import type { Measure, ProductLine, SaleItemLine, SetupView } from "../api";
 import { api, ServePointError } from "../api";
 import { Banner, Card, Chip, Empty, Field, Loading } from "../ui";
 
@@ -166,8 +166,6 @@ function Products({ view, busy, run }: Section) {
   const [name, setName] = useState("");
   const [category, setCategory] = useState("");
   const [unit, setUnit] = useState<"BOTTLE" | "SHOT" | "UNIT">("BOTTLE");
-  const [perPack, setPerPack] = useState("1");
-  const [perPurchase, setPerPurchase] = useState("24");
   const [threshold, setThreshold] = useState("3");
   const [destination, setDestination] = useState<"BAR" | "KITCHEN">("BAR");
   const [counting, setCounting] = useState<ProductLine>();
@@ -176,6 +174,10 @@ function Products({ view, busy, run }: Section) {
   // shelf is what you sell. Untick it for a mixer nobody orders by name.
   const [onMenu, setOnMenu] = useState(true);
   const [price, setPrice] = useState("");
+  // What one counted unit holds. Left as NONE for anything handed over whole,
+  // which is most of a club's list.
+  const [measure, setMeasure] = useState<Measure>("NONE");
+  const [perUnit, setPerUnit] = useState("750");
 
   return (
     <Card
@@ -208,22 +210,30 @@ function Products({ view, busy, run }: Section) {
               </select>
             </Field>
             <Field
-              label="Units per pack"
-              help="A bottle poured as shots holds more than one — 24 shots to a bottle of gin."
+              label="What one contains"
+              help="Set this only when it is poured or weighed out. A whole bottle handed over needs nothing here."
             >
-              <input
-                inputMode="decimal"
-                value={perPack}
-                onChange={(event) => setPerPack(event.target.value)}
-              />
+              <select
+                value={measure}
+                onChange={(event) => setMeasure(event.target.value as Measure)}
+              >
+                <option value="NONE">Sold whole — nothing to measure</option>
+                <option value="ML">Millilitres</option>
+                <option value="GRAM">Grams</option>
+              </select>
             </Field>
-            <Field label="Bought in packs of">
-              <input
-                inputMode="numeric"
-                value={perPurchase}
-                onChange={(event) => setPerPurchase(event.target.value)}
-              />
-            </Field>
+            {measure !== "NONE" && (
+              <Field
+                label={measure === "ML" ? "Millilitres in one" : "Grams in one"}
+                help="A 750ml bottle is 750. Recipes are then written in that measure."
+              >
+                <input
+                  inputMode="decimal"
+                  value={perUnit}
+                  onChange={(event) => setPerUnit(event.target.value)}
+                />
+              </Field>
+            )}
             <Field label="Warn below" help="When this many are left, it is flagged as low.">
               <input
                 inputMode="decimal"
@@ -277,11 +287,16 @@ function Products({ view, busy, run }: Section) {
               const ok = await run(() =>
                 api.addProduct({
                   salePrice: onMenu ? price : null,
+                  contentMeasure: measure,
+                  contentPerUnitMilli: measure === "NONE" ? 0 : toMilli(perUnit),
                   name,
                   category,
                   baseUnit: unit,
-                  baseUnitsPerPack: toMilli(perPack),
-                  unitsPerPurchasePack: Number(perPurchase) || 0,
+                  // Both are inert: nothing in the codebase multiplies by
+                  // either, and "what one contains" above is the field that
+                  // actually converts. Sent as one so the CHECKs hold.
+                  baseUnitsPerPack: MILLI,
+                  unitsPerPurchasePack: 1,
                   lowStockThreshold: toMilli(threshold),
                   tracksInventory: true,
                   destination,
@@ -291,6 +306,7 @@ function Products({ view, busy, run }: Section) {
                 setName("");
                 setPrice("");
                 setOnMenu(true);
+                setMeasure("NONE");
                 setOpen(false);
               }
             }}
@@ -313,6 +329,8 @@ function Products({ view, busy, run }: Section) {
                 <strong>{product.name}</strong>
                 <span className="muted">
                   {product.code} · {product.category} · {product.onHand} on the shelf
+                  {product.contentMeasure !== "NONE" &&
+                    ` · ${product.contentPerUnit}${product.contentMeasure === "ML" ? "ml" : "g"} each`}
                 </span>
               </span>
               <span className="row__value">
@@ -554,12 +572,20 @@ function SaleItems({ view, busy, run }: Section) {
 }
 
 function Composition({ item, view, busy, run }: Section & { item: SaleItemLine }) {
+  // A measured product is edited in its own measure — 30, meaning 30ml — and
+  // Rust converts. An unmeasured one is edited in whole counted units.
   const [lines, setLines] = useState(
     item.recipe.map((line) => ({
       productId: line.productId,
-      quantity: String(line.quantityMilli / MILLI),
+      quantity: line.measure === "NONE" ? String(line.quantityMilli / MILLI) : line.measureQuantity,
     })),
   );
+  const measureOf = (productId: number) =>
+    view.products.find((product) => product.id === productId)?.contentMeasure ?? "NONE";
+  const unitLabel = (productId: number) => {
+    const measure = measureOf(productId);
+    return measure === "ML" ? "millilitres" : measure === "GRAM" ? "grams" : "whole units";
+  };
   const [price, setPrice] = useState(item.price ?? "");
 
   return (
@@ -595,7 +621,7 @@ function Composition({ item, view, busy, run }: Section & { item: SaleItemLine }
               ))}
             </select>
           </Field>
-          <Field label="How much">
+          <Field label={`How much, in ${unitLabel(line.productId)}`}>
             <input
               inputMode="decimal"
               value={line.quantity}
@@ -630,6 +656,7 @@ function Composition({ item, view, busy, run }: Section & { item: SaleItemLine }
                 lines.map((line) => ({
                   productId: line.productId,
                   quantityMilli: toMilli(line.quantity),
+                  inMeasure: measureOf(line.productId) !== "NONE",
                 })),
               ),
             )

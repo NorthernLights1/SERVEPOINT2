@@ -27,6 +27,12 @@ pub struct Product {
     pub destination: String,
     pub avg_cost: Money,
     pub active: bool,
+    /// `NONE`, `ML` or `GRAM` — what one counted unit is made of, when it is
+    /// poured or weighed out rather than handed over whole.
+    pub content_measure: String,
+    /// How much of that measure one counted unit holds: a 750ml bottle is
+    /// `Milli::from_units(750)`. Zero when there is no measure.
+    pub content_per_unit: Milli,
 }
 
 #[derive(Clone, Debug)]
@@ -40,6 +46,10 @@ pub struct NewProduct<'a> {
     pub low_stock_threshold: Milli,
     pub tracks_inventory: bool,
     pub destination: &'a str,
+    /// `NONE`, `ML` or `GRAM`.
+    pub content_measure: &'a str,
+    /// How much of that measure one counted unit holds. Zero when there is none.
+    pub content_per_unit: Milli,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -83,7 +93,7 @@ pub struct Consumed {
 
 const PRODUCT_COLUMNS: &str = "id, code, name, category, base_unit, base_units_per_pack,
      units_per_purchase_pack, low_stock_threshold_milli, tracks_inventory, destination,
-     avg_cost_minor, active";
+     avg_cost_minor, active, content_measure, content_per_unit_milli";
 
 fn read_product(row: &rusqlite::Row<'_>) -> rusqlite::Result<Product> {
     Ok(Product {
@@ -99,6 +109,8 @@ fn read_product(row: &rusqlite::Row<'_>) -> rusqlite::Result<Product> {
         destination: row.get(9)?,
         avg_cost: Money::from_minor(row.get(10)?),
         active: row.get::<_, i64>(11)? == 1,
+        content_measure: row.get(12)?,
+        content_per_unit: Milli::from_thousandths(row.get(13)?),
     })
 }
 
@@ -118,7 +130,50 @@ fn validate_product(input: &NewProduct<'_>) -> Result<()> {
     if input.low_stock_threshold.is_negative() {
         return super::refuse("a low-stock threshold cannot be negative");
     }
+    match input.content_measure {
+        "NONE" => {}
+        "ML" | "GRAM" => {
+            // Without a size, converting a poured amount would divide by zero.
+            if input.content_per_unit.thousandths() <= 0 {
+                return super::refuse("a measured item must say how much one holds");
+            }
+        }
+        other => {
+            return super::refuse(&format!("{other} is not a measure this till understands"));
+        }
+    }
     Ok(())
+}
+
+/// Convert an amount poured — 30ml — into the fraction of a counted unit a
+/// recipe line stores.
+///
+/// 30ml out of a 750ml bottle is 0.040 of a bottle, so `Milli(40)`. Done here,
+/// once, rather than on the screen: the webview computes nothing, and a recipe
+/// written in the wrong unit draws the wrong stock every night thereafter.
+pub fn measure_to_units(poured: Milli, per_unit: Milli) -> Result<Milli> {
+    if per_unit.thousandths() <= 0 {
+        return super::refuse("that item does not say how much one holds");
+    }
+    // Rounded rather than truncated, so a 25ml pour of a 700ml bottle stays the
+    // nearest thousandth rather than always reading light.
+    let numerator = i128::from(poured.thousandths()) * i128::from(Milli::ONE.thousandths());
+    let denominator = i128::from(per_unit.thousandths());
+    let units = (numerator + denominator / 2) / denominator;
+    let units = i64::try_from(units)
+        .map_err(|_| RepoError::Refused("that measure is too large to work with".into()))?;
+    if units <= 0 {
+        return super::refuse("that measure is too small to draw anything off the shelf");
+    }
+    Ok(Milli::from_thousandths(units))
+}
+
+/// The inverse, for showing a stored recipe line back in the unit it was
+/// written in. 0.040 of a 750ml bottle reads as 30ml.
+pub fn units_to_measure(units: Milli, per_unit: Milli) -> Milli {
+    let poured = i128::from(units.thousandths()) * i128::from(per_unit.thousandths())
+        / i128::from(Milli::ONE.thousandths());
+    Milli::from_thousandths(i64::try_from(poured).unwrap_or(i64::MAX))
 }
 
 pub fn add_product(conn: &Connection, input: &NewProduct<'_>, at: i64) -> Result<i64> {
@@ -127,8 +182,9 @@ pub fn add_product(conn: &Connection, input: &NewProduct<'_>, at: i64) -> Result
         "INSERT INTO products
              (code, name, category, base_unit, base_units_per_pack,
               units_per_purchase_pack, low_stock_threshold_milli,
-              tracks_inventory, destination, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+              tracks_inventory, destination, created_at,
+              content_measure, content_per_unit_milli)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         rusqlite::params![
             input.code.trim(),
             input.name.trim(),
@@ -140,6 +196,8 @@ pub fn add_product(conn: &Connection, input: &NewProduct<'_>, at: i64) -> Result
             i64::from(input.tracks_inventory),
             input.destination,
             at,
+            input.content_measure,
+            input.content_per_unit.thousandths(),
         ],
     ))?;
     Ok(conn.last_insert_rowid())
@@ -157,7 +215,8 @@ pub fn update_product(
             SET code = ?2, name = ?3, category = ?4, base_unit = ?5,
                 base_units_per_pack = ?6, units_per_purchase_pack = ?7,
                 low_stock_threshold_milli = ?8, tracks_inventory = ?9,
-                destination = ?10, active = ?11
+                destination = ?10, active = ?11,
+                content_measure = ?12, content_per_unit_milli = ?13
           WHERE id = ?1",
         rusqlite::params![
             id,
@@ -171,6 +230,8 @@ pub fn update_product(
             i64::from(input.tracks_inventory),
             input.destination,
             i64::from(active),
+            input.content_measure,
+            input.content_per_unit.thousandths(),
         ],
     ))?;
     if changed == 0 {
