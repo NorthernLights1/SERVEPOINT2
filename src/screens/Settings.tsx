@@ -37,6 +37,18 @@ function percentToRate(percent: string): string {
   return String(Math.round(value * 100));
 }
 
+/**
+ * Hold a typed time in the 24-hour `HH:mm` that settings store and Rust parses.
+ *
+ * Digits only, with the colon put in after the second one, so `1800` and
+ * `18:00` both arrive as `18:00` — a till has a numeric keypad, and a colon is
+ * often not on it.
+ */
+function toClock(typed: string): string {
+  const digits = typed.replace(/\D/g, "").slice(0, 4);
+  return digits.length > 2 ? `${digits.slice(0, 2)}:${digits.slice(2)}` : digits;
+}
+
 export function Settings() {
   const [view, setView] = useState<SettingsView>();
   const [edits, setEdits] = useState<Record<string, string>>({});
@@ -259,14 +271,21 @@ function Control({
         </Field>
       );
 
+    // Deliberately not `type="time"`. WebKitGTK renders that picker in the
+    // machine's locale and ignores the document language, so a till on a
+    // US-English system asks the owner to set the trading night in "06:00 PM"
+    // — and no attribute talks it out of it. A trading day is set once and
+    // read by everyone; it should say the same thing on every machine.
     case "time":
       return (
         <Field label={field.label} help={field.help}>
           <input
             className="input input--num input--short"
-            type="time"
+            inputMode="numeric"
+            placeholder="18:00"
+            maxLength={5}
             value={value}
-            onChange={(event) => onChange(event.target.value)}
+            onChange={(event) => onChange(toClock(event.target.value))}
           />
         </Field>
       );

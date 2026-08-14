@@ -202,7 +202,13 @@ fn view_of(conn: &Connection, now: i64) -> Result<ReconciliationView> {
             Some(open) => settings.format_money(cash::expected_cash(conn, open.id)?),
             None => settings.format_money(Money::ZERO),
         },
-        shift: crate::commands::open_shift_of(conn, now)?,
+        // The active shift, not merely the open one. This screen exists to
+        // finish a night that has already begun closing, and the card that
+        // offers the drawer count is gated on this field being present.
+        shift: match shift.as_ref() {
+            Some(active) => crate::commands::shift_view_of(conn, now, active.id)?,
+            None => None,
+        },
         waiters,
         can_begin_closing: blocker.is_none(),
         blocker,
@@ -552,6 +558,63 @@ mod tests {
             .blocker
             .unwrap()
             .contains("No trading night"));
+    }
+
+    #[test]
+    fn a_tab_still_running_carries_into_the_next_night_rather_than_blocking_the_close() {
+        // The late party at the last table. Nobody has been billed for it, so
+        // there is no money unaccounted for and no reason to refuse to close
+        // the books over it — `repo::tabs` was always built to carry a tab
+        // across nights and hand it to a new waiter there.
+        //
+        // Refusing it was also a trap with no way out: settling a tab needs an
+        // OPEN shift, and a night never comes back from CLOSING.
+        let night = night("carry-over");
+        let late = floor::open_tab(&night.state, night.waiter, "9", None)
+            .unwrap()
+            .tabs
+            .into_iter()
+            .find(|tab| tab.label.contains('9'))
+            .expect("the late tab is on the floor")
+            .id;
+
+        settle_waiter(&night.state, night.waiter, Method::Cash, "55", None).unwrap();
+        begin_closing(&night.state).unwrap();
+        let closed = close_night(&night.state, "555").unwrap();
+        assert!(closed.balanced, "the open tab owes nothing yet");
+
+        assert!(
+            floor::floor_view(&night.state)
+                .unwrap()
+                .tabs
+                .iter()
+                .any(|tab| tab.id == late),
+            "a tab still running must survive the night it was opened on"
+        );
+    }
+
+    #[test]
+    fn a_night_that_has_begun_closing_is_still_named_so_it_can_be_finished() {
+        // The deadlock this exists to prevent, which shipped once: End of day
+        // draws its card only when the view names a shift, and the till
+        // refuses to open a night while one is still active. A view that took
+        // the *open* shift rather than the *active* one forgot a night the
+        // moment it began closing — so the drawer count became unreachable
+        // and no new night could be opened either. The venue was stuck.
+        let night = night("still-named");
+        settle_waiter(&night.state, night.waiter, Method::Cash, "55", None).unwrap();
+
+        let view = begin_closing(&night.state).unwrap();
+        assert!(view.shift.is_some(), "a closing night must still be named");
+
+        // The screen re-reads rather than keeping what `begin_closing` handed
+        // back, so the read path is the one that has to hold.
+        let reread = reconciliation_view(&night.state).unwrap();
+        assert!(
+            reread.shift.is_some(),
+            "reopening End of day must still find the night to be counted"
+        );
+        assert!(reread.blocker.unwrap().contains("already begun closing"));
     }
 
     #[test]

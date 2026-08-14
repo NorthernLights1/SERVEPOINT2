@@ -68,6 +68,7 @@ fn main() {
             venue::cmd_set_staff_active,
             venue::cmd_add_product,
             venue::cmd_sell_product,
+            venue::cmd_sell_by_measure,
             venue::cmd_edit_product,
             venue::cmd_add_sale_item,
             venue::cmd_edit_sale_item,

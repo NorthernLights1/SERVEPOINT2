@@ -476,6 +476,23 @@ pub fn sell_product(state: &AppState, product_id: i64, price: &str) -> Result<Se
     })
 }
 
+/// Start selling a measure of something on the shelf — a shot from a bottle.
+///
+/// The measure arrives in the product's own unit as thousandths: 30000 means
+/// 30ml. Rust divides it into the fraction of a bottle the recipe stores.
+pub fn sell_by_measure(
+    state: &AppState,
+    product_id: i64,
+    poured_milli: i64,
+    price: &str,
+) -> Result<SetupView> {
+    let poured = milli(poured_milli, "A measure")?;
+    let price = money(price, "Shot price")?;
+    commission(state, move |conn, actor, at| {
+        commissioning::sell_by_measure(conn, actor, product_id, poured, price, at)
+    })
+}
+
 pub fn edit_product(state: &AppState, product_id: i64, form: &ProductForm) -> Result<SetupView> {
     let new = product_of(form)?;
     let input = commissioning::ProductUpdate {
@@ -608,6 +625,16 @@ pub fn cmd_sell_product(
     price: String,
 ) -> Result<SetupView> {
     sell_product(&state, product_id, &price)
+}
+
+#[tauri::command]
+pub fn cmd_sell_by_measure(
+    state: tauri::State<'_, AppState>,
+    product_id: i64,
+    poured_milli: i64,
+    price: String,
+) -> Result<SetupView> {
+    sell_by_measure(&state, product_id, poured_milli, &price)
 }
 
 #[tauri::command]
@@ -813,6 +840,48 @@ mod tests {
         let mut form = product_form("Gin");
         form.category = "Spirits".into();
         assert!(edit_product(&state, gin, &form).is_ok());
+    }
+
+    #[test]
+    fn a_shot_is_sellable_the_moment_it_is_added() {
+        // Built as three separate commands from the screen, a shot could end
+        // up with a menu entry and no recipe, or a recipe and no price — which
+        // is how this venue ended up with two items that looked finished in
+        // the catalogue and were refused at the till.
+        let state = owned();
+        let mut form = product_form("Jack Daniels");
+        form.content_measure = Measure::Ml;
+        form.content_per_unit_milli = 750_000;
+        form.sale_price = Some("3000".into());
+        add_product(&state, &form).unwrap();
+        let bottle = setup_view(&state).unwrap().products[0].id;
+
+        // 30ml of a 750ml bottle.
+        let view = sell_by_measure(&state, bottle, 30_000, "100").unwrap();
+
+        let shot = view
+            .sale_items
+            .iter()
+            .find(|item| item.name.contains("30ml"))
+            .expect("the shot is on the menu under its own name");
+        assert!(shot.sellable, "priced and poured, so the till can ring it");
+        assert_eq!(shot.price.as_deref(), Some("100.00"));
+        assert_eq!(shot.recipe.len(), 1, "one bottle, never a cocktail");
+        assert_eq!(shot.recipe[0].measure_quantity, "30");
+    }
+
+    #[test]
+    fn a_bottle_that_does_not_say_how_much_it_holds_cannot_be_poured() {
+        let state = owned();
+        add_product(&state, &product_form("Harar Beer")).unwrap();
+        let beer = setup_view(&state).unwrap().products[0].id;
+
+        let refused = sell_by_measure(&state, beer, 30_000, "100").unwrap_err();
+        assert_eq!(refused.kind, "REFUSED");
+        assert!(
+            refused.message.contains("how much one holds"),
+            "{refused:?}"
+        );
     }
 
     #[test]

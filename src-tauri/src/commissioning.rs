@@ -535,6 +535,113 @@ pub fn sell_product(
     })
 }
 
+/// Put a shelf item on the menu sold by the measure — a shot poured from a
+/// bottle.
+///
+/// The same three rows and the same three audit entries as [`sell_within`],
+/// differing only in what the recipe draws: a fraction of a counted unit
+/// rather than a whole one.
+///
+/// It lives here, in one transaction, for a reason this venue proved the hard
+/// way. Built from the screen as three separate commands, a shot could end up
+/// with a menu entry and no recipe, or a recipe and no price — an item that
+/// looks finished in the catalogue and is refused at the till, with nothing on
+/// either screen saying why.
+fn sell_measure_within(
+    tx: &rusqlite::Transaction<'_>,
+    actor_id: i64,
+    product_id: i64,
+    poured: Milli,
+    price: Money,
+    at: i64,
+) -> Result<(i64, i64)> {
+    let product = catalogue::product(tx, product_id)?;
+    if product.content_measure == "NONE" || product.content_per_unit.thousandths() <= 0 {
+        return Err(repo::RepoError::Refused(format!(
+            "{} does not say how much one holds, so it cannot be sold by the measure.",
+            product.name.trim()
+        ))
+        .into());
+    }
+    // Rust turns the poured amount into the fraction of a bottle a recipe line
+    // stores. The screen sends "30", never 0.04.
+    let draws = catalogue::measure_to_units(poured, product.content_per_unit)?;
+    let unit = if product.content_measure == "ML" {
+        "ml"
+    } else {
+        "g"
+    };
+    let name = format!("{} ({}{unit})", product.name.trim(), poured.to_display());
+
+    let (_, code) = seq::next(tx, seq::Counter::SaleItem)?;
+    let sale_item_id = catalogue::add_sale_item(
+        tx,
+        &catalogue::NewSaleItem {
+            code: &code,
+            name: &name,
+            category: &product.category,
+        },
+        at,
+    )?;
+    audit(
+        tx,
+        actor_id,
+        "SALE_ITEM_CREATED",
+        "sale_item",
+        sale_item_id,
+        &format!(
+            "code={code};name={name};category={};poured_from={product_id}",
+            product.category.trim()
+        ),
+        at,
+    )?;
+
+    let recipe_id =
+        catalogue::revise_recipe(tx, sale_item_id, &[(product_id, draws)], at, actor_id)?;
+    audit(
+        tx,
+        actor_id,
+        "RECIPE_CHANGED",
+        "recipe",
+        recipe_id,
+        &format!("sale_item_id={sale_item_id};line_count=1"),
+        at,
+    )?;
+
+    catalogue::reprice(tx, sale_item_id, price, at, actor_id)?;
+    let price_id = tx.last_insert_rowid();
+    let audit_sequence = audit(
+        tx,
+        actor_id,
+        "PRICE_CHANGED",
+        "price",
+        price_id,
+        &format!("sale_item_id={sale_item_id};price_minor={}", price.minor()),
+        at,
+    )?;
+    Ok((sale_item_id, audit_sequence))
+}
+
+/// Start selling a measure of something already on the shelf.
+pub fn sell_by_measure(
+    conn: &mut Connection,
+    actor_id: i64,
+    product_id: i64,
+    poured: Milli,
+    price: Money,
+    at: i64,
+) -> Result<Change> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    require_owner(&tx, actor_id)?;
+    let (sale_item_id, audit_sequence) =
+        sell_measure_within(&tx, actor_id, product_id, poured, price, at)?;
+    tx.commit()?;
+    Ok(Change {
+        entity_id: sale_item_id,
+        audit_sequence,
+    })
+}
+
 pub fn create_product(
     conn: &mut Connection,
     actor_id: i64,

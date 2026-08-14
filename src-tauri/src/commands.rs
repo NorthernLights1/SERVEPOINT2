@@ -15,7 +15,7 @@
 //! tests drive, so the rules are covered without starting a webview.
 
 use chrono::Utc;
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
 use crate::audit::ChainStatus;
 use crate::auth;
@@ -296,13 +296,39 @@ fn accounts_of(conn: &Connection) -> Result<Vec<AccountView>> {
     Ok(rows.collect::<std::result::Result<_, _>>()?)
 }
 
+/// The shift the till is trading on. A night that has begun closing takes no
+/// more trade, so it is deliberately not one of these.
 pub(crate) fn open_shift_of(conn: &Connection, now: i64) -> Result<Option<ShiftView>> {
+    let found: Option<i64> = conn
+        .query_row(
+            "SELECT id FROM shifts WHERE status = 'OPEN' LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    match found {
+        Some(shift_id) => shift_view_of(conn, now, shift_id),
+        None => Ok(None),
+    }
+}
+
+/// The screen's picture of one named shift, whatever its status.
+///
+/// Reconciliation needs this rather than [`open_shift_of`]: the night it is
+/// counting has, by then, already begun closing. A screen that could not name
+/// that shift could not offer the drawer count either, which left a night End
+/// of day refused to finish and the till refused to trade past.
+pub(crate) fn shift_view_of(
+    conn: &Connection,
+    now: i64,
+    shift_id: i64,
+) -> Result<Option<ShiftView>> {
     let mut statement = conn.prepare(
         "SELECT s.id, s.code, s.business_date, s.expected_end_at, st.full_name
            FROM shifts s JOIN staff st ON st.id = s.opened_by
-          WHERE s.status = 'OPEN' LIMIT 1",
+          WHERE s.id = ?1",
     )?;
-    let mut rows = statement.query([])?;
+    let mut rows = statement.query([shift_id])?;
     let Some(row) = rows.next()? else {
         return Ok(None);
     };

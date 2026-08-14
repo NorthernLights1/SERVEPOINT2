@@ -721,6 +721,13 @@ export const api = {
   addProduct: (form: ProductForm) => call<SetupView>("cmd_add_product", { form }),
   sellProduct: (productId: number, price: string) =>
     call<SetupView>("cmd_sell_product", { productId, price }),
+  /**
+   * Sell a measure of something on the shelf — a shot from a bottle. The
+   * amount is in the product's own unit as thousandths: 30000 is 30ml. Menu
+   * entry, recipe and price are written together or not at all.
+   */
+  sellByMeasure: (productId: number, pouredMilli: number, price: string) =>
+    call<SetupView>("cmd_sell_by_measure", { productId, pouredMilli, price }),
   editProduct: (productId: number, form: ProductForm) =>
     call<SetupView>("cmd_edit_product", { productId, form }),
   addSaleItem: (form: SaleItemForm) => call<SetupView>("cmd_add_sale_item", { form }),

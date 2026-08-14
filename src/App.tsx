@@ -14,19 +14,22 @@ import { useCallback, useEffect, useState } from "react";
 import { api, inDesktopApp, type BootstrapView, type ServePointError, type Session } from "./api";
 import { Banner, Loading } from "./ui";
 import { SignIn, Setup } from "./screens/Gate";
-import { Catalogue } from "./screens/Catalogue";
 import { Settings } from "./screens/Settings";
 import { EndOfDay } from "./screens/EndOfDay";
-import { Inventory, Overview, Reports, Till } from "./screens/Floor";
+import { Overview, Reports, Till } from "./screens/Floor";
+import { Warehouse } from "./screens/Warehouse";
+import { Waiters } from "./screens/Waiters";
 
-type Route =
-  | "overview"
-  | "till"
-  | "inventory"
-  | "endofday"
-  | "reports"
-  | "catalogue"
-  | "settings";
+/**
+ * Five places, and no more.
+ *
+ * The bar could not hold seven. "Catalogue" and "Inventory" were one subject
+ * split in two — what you stock and what you sell — so they are one Warehouse.
+ * "End of day" was a screen usable once a night, so it sits under Reports,
+ * where the night is read anyway. Settings is nowhere anybody goes during
+ * service, so it lives down by the sign-out button.
+ */
+type Route = "overview" | "sale" | "warehouse" | "waiters" | "reports" | "settings";
 
 interface NavEntry {
   route: Route;
@@ -35,9 +38,9 @@ interface NavEntry {
 }
 
 const CASHIER_NAV: NavEntry[] = [
-  { route: "till", label: "Till", glyph: "▤" },
-  { route: "endofday", label: "End of day", glyph: "◫" },
-  { route: "inventory", label: "Inventory", glyph: "▦" },
+  { route: "sale", label: "New sale", glyph: "▤" },
+  { route: "warehouse", label: "Warehouse", glyph: "▦" },
+  { route: "reports", label: "Reports", glyph: "▥" },
 ];
 
 // The owner gets everything the cashier gets, plus their own screens. In a
@@ -45,12 +48,10 @@ const CASHIER_NAV: NavEntry[] = [
 // night but not close it would strand the till.
 const OWNER_NAV: NavEntry[] = [
   { route: "overview", label: "Overview", glyph: "◑" },
-  { route: "till", label: "Till", glyph: "▤" },
-  { route: "endofday", label: "End of day", glyph: "◫" },
+  { route: "sale", label: "New sale", glyph: "▤" },
+  { route: "warehouse", label: "Warehouse", glyph: "▦" },
+  { route: "waiters", label: "Waiters", glyph: "♙" },
   { route: "reports", label: "Reports", glyph: "▥" },
-  { route: "inventory", label: "Inventory", glyph: "▦" },
-  { route: "catalogue", label: "Catalogue", glyph: "◈" },
-  { route: "settings", label: "Settings", glyph: "⚙" },
 ];
 
 type Theme = "night" | "day";
@@ -73,7 +74,7 @@ export default function App() {
       // Land wherever this person actually works, rather than on a screen
       // their role cannot open.
       if (next.session) {
-        setRoute(next.session.role === "OWNER" ? "overview" : "till");
+        setRoute(next.session.role === "OWNER" ? "overview" : "sale");
       }
     } catch (raw) {
       setError((raw as ServePointError).message);
@@ -174,6 +175,19 @@ export default function App() {
               <div className="brand__venue">{session.role === "OWNER" ? "Owner" : "Cashier"}</div>
             </span>
           </div>
+          {session.role === "OWNER" && (
+            <button
+              type="button"
+              className="navitem"
+              aria-current={current === "settings" ? "page" : undefined}
+              onClick={() => setRoute("settings")}
+            >
+              <span className="navitem__glyph" aria-hidden="true">
+                ⚙
+              </span>
+              <span className="navitem__label">Settings</span>
+            </button>
+          )}
           <button
             type="button"
             className="navitem"
@@ -208,11 +222,16 @@ export default function App() {
         </header>
 
         {current === "overview" && <Overview boot={boot} />}
-        {current === "till" && <Till />}
-        {current === "inventory" && <Inventory />}
-        {current === "endofday" && <EndOfDay />}
-        {current === "reports" && <Reports />}
-        {current === "catalogue" && <Catalogue />}
+        {current === "sale" && <Till />}
+        {current === "warehouse" && <Warehouse />}
+        {current === "waiters" && <Waiters />}
+        {/* Closing the night is reading the night, so both live here. */}
+        {current === "reports" && (
+          <>
+            <Reports />
+            <EndOfDay />
+          </>
+        )}
         {current === "settings" && <Settings />}
       </div>
     </div>

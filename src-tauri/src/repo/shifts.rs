@@ -213,16 +213,25 @@ pub fn close(
         return super::refuse("resolve every outstanding print attempt before closing the shift");
     }
 
-    // A tab still open, or closed but never settled, means money is
-    // unaccounted for. Sealing the night over it would bury the discrepancy
-    // in a report nobody can later explain.
-    let unsettled: bool = conn.query_row(
-        "SELECT EXISTS (SELECT 1 FROM tabs WHERE status IN ('OPEN','CLOSED'))",
+    // A tab closed but never reconciled is money taken and not accounted for.
+    // Sealing the night over it would bury the discrepancy in a report nobody
+    // can later explain.
+    //
+    // A tab still *open* is a different thing and deliberately does not block:
+    // nobody has been billed yet, and the late party at the last table is no
+    // reason to refuse to close the books. It carries into the next night,
+    // which is what `tabs` was already built for — it can be transferred to a
+    // new waiter there, and `floor::open_tabs` lists it without asking which
+    // shift opened it. Refusing it here was also a dead end: settling needs an
+    // OPEN shift, and there is no way back from CLOSING, so a night that began
+    // closing over an open tab could never be finished or traded past.
+    let unreconciled: bool = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM tabs WHERE status = 'CLOSED')",
         [],
         |row| row.get(0),
     )?;
-    if unsettled {
-        return super::refuse("every tab must be settled and reconciled before the night closes");
+    if unreconciled {
+        return super::refuse("every settled tab must be reconciled before the night closes");
     }
 
     let changed = guarded!(conn.execute(
